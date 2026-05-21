@@ -11,12 +11,12 @@ from typing import Callable, Awaitable, Any
 from agents.mcp_client import McpManager
 from agents.prompt import build_system_prompt, build_plan_mode_prompt
 from agents.session import save_session
-from agents.tools import ToolDef, tool_definitions
+from agents.tools import ToolDef, tool_definitions, execute_tool
 
 import openai
 import anthropic
 
-from agents.ui import print_info, print_divider, print_assistant_text
+from agents.ui import print_info, print_divider, print_assistant_text, print_sub_agent_start, print_sub_agent_end
 
 MODEL_CONTEXT = {
     "claude-opus-4-6": 200000,
@@ -614,6 +614,44 @@ class Agent:
     #
     async def _execute_skill_tool(self, inp: dict) -> str:
         from .skills import execute_skill
+        result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
+
+        if not result:
+            return f"Unknown skill: {inp.get('skill_name', '')}"
+
+        if result["context"] == "fork":
+            # result["allowed_tools"] - 直接访问
+            tools = (
+                [t for t in self.tools if t["name"] in  result["allowed_tools"] ]
+                #result.get("allowed_tools") - 安全访问
+                # 存在key：返回对应的值（可能是 None、[]、["tool1"] 等）
+                # 不存在key：返回 None（不会抛异常）
+                if result.get("allowed_tools")
+                else  [t for t in self.tools if t["name"] != "agent"]
+            )
+
+            print_sub_agent_start("skill-fork", inp.get("skill_name", ""))
+            sub_agent = Agent(
+                model=self.model,
+                api_base=str(self._openai_client.base_url) if self.use_openai and self._openai_client else None,
+                custom_system_prompt=result["prompt"],
+                custom_tools=tools,
+                is_sub_agent=True,
+                permission_mode="plan" if self.permission_mode == "plan" else "bypassPermissions",
+            )
+            try:
+                sub_result = await sub_agent.run_once(inp.get("args") or "Execute this skill task.")
+                self.total_input_tokens += sub_result["tokens"]["input"]
+                self.total_output_tokens += sub_result["tokens"]["output"]
+                print_sub_agent_end("skill-fork", inp.get("skill_name", ""))
+                return sub_result["text"] or "(Skill produced no output)"
+            except Exception as e:
+                print_sub_agent_end("skill-fork", inp.get("skill_name", ""))
+                return f"Skill fork error: {e}"
+
+        return f'[Skill "{inp.get("skill_name", "")}" activated]\n\n{result["prompt"]}'
+
+
 
 
 
