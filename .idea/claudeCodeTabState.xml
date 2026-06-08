@@ -6,11 +6,11 @@
         <entry key="0">
           <value>
             <TabSessionState>
-              <option name="provider" value="claude" />
-              <option name="sessionId" value="56f549ec-7a8f-4d5c-a2df-33611cb0ae19" />
+              <option name="provider" value="codex" />
+              <option name="sessionId" value="019ea55b-df85-7122-a116-f22725314a60" />
               <option name="cwd" value="$PROJECT_DIR$" />
-              <option name="model" value="claude-haiku-4-5" />
-              <option name="permissionMode" value="acceptEdits" />
+              <option name="model" value="gpt-5.5" />
+              <option name="permissionMode" value="bypassPermissions" />
               <option name="reasoningEffort" value="high" />
             </TabSessionState>
           </value>
