@@ -10,15 +10,16 @@ from pyexpat.errors import messages
 from typing import Callable, Awaitable, Any
 
 from agents.mcp_client import McpManager
-from agents.memory import MemoryPrefetch
+from agents.memory import MemoryPrefetch, start_memory_prefetch, format_memories_for_injection
 from agents.prompt import build_system_prompt, build_plan_mode_prompt
 from agents.session import save_session
-from agents.tools import ToolDef, tool_definitions, execute_tool
+from agents.tools import ToolDef, tool_definitions, execute_tool, CONCURRENCY_SAFE_TOOLS, check_permission
 
 import openai
 import anthropic
 
-from agents.ui import print_info, print_divider, print_assistant_text, print_sub_agent_start, print_sub_agent_end
+from agents.ui import print_info, print_divider, print_assistant_text, print_sub_agent_start, print_sub_agent_end, \
+    start_spinner, stop_spinner, print_cost, print_tool_call, print_tool_result
 
 MODEL_CONTEXT = {
     "claude-opus-4-6": 200000,
@@ -105,7 +106,7 @@ class Agent:
 
         #记忆回溯
         #记忆agent已经回答过的信息
-        self._already_surfaced_memorized: set[str] = set()
+        self._already_surfaced_memories: set[str] = set()
         #当前会话占用的字节数
         self._session_memory_bytes = 0
 
@@ -766,9 +767,11 @@ class Agent:
 
 #--------------Anthropic 后端---------------
     async def  _chat_anthropic(self, user_message: str) -> None:
+        # 先把本轮用户输入放入 Anthropic 消息历史，后续每轮模型调用都会带上这段上下文。
         self._anthropic_messages.append({"role": "user", "content": user_message})
 
-        #异步内存预取
+        # 异步内存预取：主 agent 才需要查 memory，sub agent 不额外注入记忆。
+        # 这里只启动后台任务，不阻塞当前模型调用流程。
         memory_prefetch:MemoryPrefetch | None = None
         if not self.is_sub_agent:
             sq = self._build_side_query()
@@ -777,6 +780,188 @@ class Agent:
                     user_message, sq,
                     self._already_surfaced_memories, self._session_memory_bytes,
                 )
+        while True:
+            # 外部请求中止时，结束整个 agent loop。
+            if self._abort:
+                break
+
+            # 每轮调用模型前尝试压缩上下文，避免消息历史过长。
+            self._run_compression_pipeline()
+
+            # 如果记忆预取任务已经完成，就把取回来的 memory 内容追加到最后一条用户消息里。
+            # consumed 用来保证同一批 memory 只注入一次。
+            if memory_prefetch and memory_prefetch.settled and not memory_prefetch.consumed:
+                memory_prefetch.consumed = True
+                try:
+                    memories = memory_prefetch.task.result()
+                    if memories:
+                        injection_text = format_memories_for_injection(memories)
+                        last = self._anthropic_messages[-1] if self._anthropic_messages else None
+                        if last and last.get("role") == "user":
+                            content = last.get("content", "")
+                            if isinstance(content, str):
+                                # 字符串不可变，需要重新赋值回 message。
+                                last["content"] = content + "\n\n" + injection_text
+                            elif isinstance(content, list):
+                                # list 是可变对象，append 会直接修改 last["content"] 指向的列表。
+                                content.append({"type": "text", "text": injection_text})
+                        else:
+                            # 如果最后一条不是 user message，就单独追加一条用户消息承载 memory。
+                            self._anthropic_messages.append({"role": "user", "content": injection_text})
+
+                        for m in memories:
+                            # 记录本 session 已经注入过的 memory，后续检索时可避免重复 surfaced。
+                            self._already_surfaced_memories.add(m.path)
+                            self._session_memory_bytes += m.size
+                except:
+                    # memory 注入失败不应该中断主对话流程。
+                    pass
+
+            if not self.is_sub_agent:
+                start_spinner()
+
+
+            # 保存“提前执行”的工具任务。key 是 Anthropic 返回的 tool_use block id。
+            early_executions: dict[str, asyncio.Task] = {}
+
+
+            def _on_tool_block(block:dict):
+                # 流式响应中一旦完整收到 tool_use block，如果工具是并发安全且权限允许，
+                # 就可以提前开始执行，减少等待完整模型响应后的空档时间。
+                if block["name"] in CONCURRENCY_SAFE_TOOLS:
+                    perm = check_permission(block["name"], block["input"], self.permission_mode, self._plan_file_path)
+                    if perm["action"]=="allow":
+                        task =asyncio.create_task(self._execute_tool_call(block["name"], block["input"]))
+                        early_executions[block["id"]] = task
+
+
+            # 调用 Anthropic 流式接口；流式过程中完成 tool block 时会触发 _on_tool_block。
+            response = await self._call_anthropic_stream(on_tool_block_complete=_on_tool_block)
+            if not self.is_sub_agent:
+                stop_spinner()
+
+            # 记录本次模型调用的耗时点和 token 消耗，用于成本展示与预算控制。
+            self.last_api_call_time = time.time()
+            self.total_input_tokens += response.usage.input_tokens
+            self.total_output_tokens += response.usage.output_tokens
+            self.last_input_token_count = response.usage.input_tokens
+
+            # Anthropic 的响应内容里可能混有 text block 和 tool_use block，这里只挑出工具调用。
+            tool_uses = [b for b in response.content if b.type == "tool_use"]
+
+            # 把模型返回的所有 content block 写入消息历史，后续 tool_result 要与这些 tool_use 对应。
+            self._anthropic_messages.append({
+                "role": "user",
+                "content": [self._block_to_dict(b) for b in response.content],
+            })
+
+            # 没有工具调用，说明模型已经给出最终回复，本轮对话结束。
+            if not tool_uses:
+                if not self.is_sub_agent:
+                    print_cost(self.total_input_tokens, self.total_output_tokens)
+                break
+
+            # 有工具调用时，进入下一轮工具执行。这里同时检查 turn/budget 限制。
+            self.current_turns += 1
+            budget = self._check_budget()
+            if budget["exceeded"]:
+                print_info(f"Budget exceeded: {budget['reason']}")
+                break
+
+
+            # 收集本轮所有工具结果，之后作为 tool_result 消息回传给模型。
+            tool_results: list[dict] = []
+            context_break = False
+
+            for tu in tool_uses:
+                # context_break 表示某个工具执行期间清理了上下文，需要停止继续处理本轮剩余工具。
+                if context_break or self._abort:
+                    break
+
+                # 将工具入参转为普通 dict，便于权限检查、打印和实际执行。
+                inp = dict(tu.input) if hasattr(tu, "items") else tu.input
+                print_tool_call(tu.name, inp)
+
+                # 如果这个工具已经在流式阶段提前开始执行，这里只需要等待它完成并收集结果。
+                early_task = early_executions.get(tu.id)
+                if early_task:
+                    raw = await early_task
+                    res = self._persist_large_result(tu.name, raw)
+                    print_tool_result(tu.name, res)
+                    tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": res})
+                    continue
+
+                # 如果不是提前执行的工具，就在真正执行前做权限检查。
+
+                perm = check_permission(tu.name, inp, self.permission_mode, self._plan_file_path)
+                if perm["action"] == "deny":
+                    # 权限拒绝时，也要返回一个 tool_result，让模型知道该工具调用失败的原因。
+                    print_info(f"Denied: {perm.get('message', '')}")
+                    tool_results.append({"type": "tool_result", "tool_use_id": tu.id,
+                                         "content": f"Action denied: {perm.get('message', '')}"})
+                    continue
+
+                if perm["action"] == "confirm" and perm.get("message") and perm["message"] not in self._confirmed_paths:
+                    # 高风险操作需要用户确认；同一个 message 确认过后会缓存，避免重复询问。
+                    confirmed = await self._confirm_dangerous(perm["message"])
+                    if not confirmed:
+                        tool_results.append(
+                            {"type": "tool_result", "tool_use_id": tu.id, "content": "User denied this action."})
+                        continue
+                    self._confirmed_paths.add(perm["message"])
+
+                # 权限通过后执行工具，并把大输出持久化为可回传的摘要或引用。
+                raw = await self._execute_tool_call(tu.name, inp)
+                res = self._persist_large_result(tu.name, raw)
+                print_tool_result(tu.name, res)
+
+                if self._context_cleared:
+                    # 工具执行过程中如果清理了上下文，就把结果作为新的用户消息写入，
+                    # 并停止继续处理本轮剩余工具，避免旧上下文和新上下文混在一起。
+                    self._context_cleared = False
+                    self._anthropic_messages.append({"role": "user", "content": res})
+                    context_break = True
+                    break
+
+                # Anthropic 要求 tool_result 使用 tool_use_id 对应到前面的 tool_use block。
+                tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": res})
+
+                if not context_break and tool_results:
+                    # 把当前累计的工具结果追加到消息历史，下一轮模型调用即可读取这些结果。
+                    self._anthropic_messages.append({"role": "user", "content": tool_results})
+                self._context_cleared = False
+
+                # 工具结果可能很长，每次工具执行后检查是否需要压缩上下文。
+                await self._check_and_compact()
+
+    @staticmethod
+    def _block_to_dict(block) -> dict:
+        if block.type == "text":
+            return {"type": "text", "text": block.text}
+        if block.type == "tool_use":
+            return {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.input) if hasattr(block.input, 'items') else block.input}
+        # Fallback
+        return {"type": block.type}
+
+    async def _call_anthropic_stream(self, on_tool_block_complete=None):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

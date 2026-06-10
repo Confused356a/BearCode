@@ -19,6 +19,11 @@ PermissionMode = str  # "default" | "plan" | "acceptEdits" | "bypassPermissions"
 READ_TOOLS = {"read_file", "list_files", "grep_search", "web_fetch"}
 EDIT_TOOLS = {"write_file", "edit_file"}
 
+
+#并发安全的工具可以并行运行（只读，无副作用）
+CONCURRENCY_SAFE_TOOLS = {"read_file", "list_files", "grep_search", "web_fetch"}
+
+
 #工具定义
 tool_definitions: list[ToolDef] = [
     {

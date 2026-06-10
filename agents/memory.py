@@ -37,7 +37,6 @@ class MemoryEntry:
         self.content = content
 
 
-# ─── Paths ──────────────────────────────────────────────────
 
 
 def _project_hash() -> str:
@@ -45,7 +44,7 @@ def _project_hash() -> str:
 
 
 def get_memory_dir() -> Path:
-    d = Path.home() / ".bear-Code" / "projects" / _project_hash() / "memory"
+    d = Path.home() / ".BearCode" / "projects" / _project_hash() / "memory"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -216,7 +215,6 @@ def memory_freshness_warning(mtime_ms: float) -> str:
             "Verify against current code before asserting as fact.")
 
 
-# ─── Semantic Recall (sideQuery) ────────────────────────────
 
 SELECT_MEMORIES_PROMPT = """You are selecting memories that will be useful to an AI coding assistant as it processes a user's query. You will be given the user's query and a list of available memory files with their filenames and descriptions.
 
@@ -367,7 +365,7 @@ def start_memory_prefetch(
 
 
 def format_memories_for_injection(memories: list[RelevantMemory]) -> str:
-    """Format recalled memories for injection as user message content."""
+    """格式化召回的记忆，以便作为用户消息内容注入."""
     parts = []
     for m in memories:
         parts.append(f"<system-reminder>\n{m.header}\n\n{m.content}\n</system-reminder>")
