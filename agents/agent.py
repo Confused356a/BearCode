@@ -945,6 +945,61 @@ class Agent:
 
     async def _call_anthropic_stream(self, on_tool_block_complete=None):
 
+        async def _do():
+            max_output =  _get_max_output_tokens(self.model)
+
+            create_params: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": max_output if self._thinking_mode != "disabled" else 16384,
+                "system": self._system_prompt,
+                "tools": get_active_tool_definitions(self.tools),
+                "messages": self._anthropic_messages,
+            }
+
+            if self._thinking_mode  in ("adaptive", "enabled"):
+                create_params["thinking"]={"type": "enabled", "budget_tokens": max_output - 1}
+
+            first_text = True
+
+            tool_blocks_by_index: dict[int, dict] = {}
+
+            async with self._anthropic_client.messages.stream(**create_params)as stream:
+                async for event in stream:
+                    if not hasattr(event, 'type'):
+                        continue
+
+                    if event.type == "content_block_start":
+                        cb = getattr(event, 'content_block', None)
+                        if cb and getattr(cb, 'type', None) == "tool_use":
+                            tool_blocks_by_index[event.index]= {
+                                "id": cb.id, "name": cb.name, "input_json": "",
+                            }
+
+                    elif event.type == "content_block_delta":
+                        delta = event.delta
+                        if hasattr(delta, "text"):
+                            if first_text:
+                                stop_spinner()
+                                self._emit_text("\n")
+                                first_text = False
+                            self._emit_text(delta.text)
+
+                        elif hasattr(delta, 'thinking'):
+                            if first_text:
+                                stop_spinner()
+                                self._emit_text("\n  [thinking] ")
+                                first_text = False
+                            self._emit_text(delta.thinking)
+                        elif hasattr(delta, 'partial_json'):
+                            tb = tool_blocks_by_index.get(event.index)
+                            if tb:
+                                tb["input_json"] += delta.partial_json
+
+                    elif event.type == "content_block_stop":
+                        tb = tool_blocks_by_index.pop(event.index, None)
+
+
+
 
 
 
