@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 import time
@@ -11,15 +12,44 @@ from typing import Callable, Awaitable, Any
 
 from agents.mcp_client import McpManager
 from agents.memory import MemoryPrefetch, start_memory_prefetch, format_memories_for_injection
-from agents.prompt import build_system_prompt, build_plan_mode_prompt
+from agents.prompt import build_system_prompt
 from agents.session import save_session
-from agents.tools import ToolDef, tool_definitions, execute_tool, CONCURRENCY_SAFE_TOOLS, check_permission
+from agents.subagent import get_sub_agent_config
+from agents.tools import ToolDef, tool_definitions, execute_tool, CONCURRENCY_SAFE_TOOLS, check_permission, \
+    get_active_tool_definitions
 
 import openai
 import anthropic
 
 from agents.ui import print_info, print_divider, print_assistant_text, print_sub_agent_start, print_sub_agent_end, \
-    start_spinner, stop_spinner, print_cost, print_tool_call, print_tool_result
+    start_spinner, stop_spinner, print_cost, print_tool_call, print_tool_result, print_confirmation, print_retry
+
+
+# 指数退避重试
+
+
+def _is_retryable(error: Exception) -> bool:
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if status in (429, 503, 529):
+        return True
+    msg = str(error)
+    if "overloaded" in msg or "ECONNRESET" in msg or "ETIMEDOUT" in msg:
+        return True
+    return False
+
+
+async def _with_retry(fn, max_retries: int = 3):
+    for attempt in range(max_retries + 1):
+        try:
+            return await fn()
+        except Exception as error:
+            if attempt >= max_retries or not _is_retryable(error):
+                raise
+            delay = min(1000 * (2 ** attempt), 30000) / 1000 + (hash(str(time.time())) % 1000) / 1000
+            status = getattr(error, "status_code", None) or getattr(error, "status", None)
+            reason = f"HTTP {status}" if status else (getattr(error, "code", None) or "network error")
+            print_retry(attempt + 1, max_retries, reason)
+            await asyncio.sleep(delay)
 
 MODEL_CONTEXT = {
     "claude-opus-4-6": 200000,
@@ -43,6 +73,32 @@ SNIPPABLE_TOOLS = {"read_file", "grep_search", "list_files", "run_shell"}
 MICROCOMPACT_IDLE_S = 5 * 60  # 5 minutes
 
 KEEP_RECENT_RESULTS = 3
+
+
+
+def _get_max_output_tokens(model: str) -> int:
+    m = model.lower()
+    if "opus-4-6" in m:
+        return 64000
+    if "sonnet-4-6" in m:
+        return 32000
+    if any(x in m for x in ("opus-4", "sonnet-4", "haiku-4")):
+        return 32000
+    return 16384
+
+#转换tool的形式到openai
+def _to_openai_tools(tools: list[ToolDef]) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            },
+        }
+        for t in tools
+    ]
 
 
 class Agent:
@@ -78,7 +134,7 @@ class Agent:
         self.current_turns = 0
         self.last_api_call_time = 0
 
-        self._abort = False
+        self._aborted = False
         #存储异步任务
         self._current_task:asyncio.Task | None = None
         #权限白名单
@@ -119,7 +175,7 @@ class Agent:
 
         if self.permission_mode == "plan":
             self._plan_file_path = self._generate_plan_file_path()
-            self._system_prompt = self._base_system_prompt + build_plan_mode_prompt(self._plan_file_path)
+            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
         else:
             self._system_prompt = self._base_system_prompt
 
@@ -165,6 +221,27 @@ class Agent:
         d.mkdir(parents=True, exist_ok=True)
         return str(d / f"plan-{self.session_id}.md")
 
+    def _build_plan_mode_prompt(self) -> str:
+        return f"""
+
+    # Plan Mode Active
+
+    Plan mode is active. You MUST NOT make any edits (except the plan file below), run non-readonly tools, or make any changes to the system.
+
+    ## Plan File: {self._plan_file_path}
+    Write your plan incrementally to this file using write_file or edit_file. This is the ONLY file you are allowed to edit.
+
+    ## Workflow
+    1. **Explore**: Read code to understand the task. Use read_file, list_files, grep_search.
+    2. **Design**: Design your implementation approach. Use the agent tool with type="plan" if the task is complex.
+    3. **Write Plan**: Write a structured plan to the plan file including:
+       - **Context**: Why this change is needed
+       - **Steps**: Implementation steps with critical file paths
+       - **Verification**: How to test the changes
+    4. **Exit**: Call exit_plan_mode when your plan is ready for user review.
+
+    IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask the user to approve — exit_plan_mode handles that."""
+
     #判断当前的任务所有的任务是否完成
     @property
     def is_processing(self)->bool:
@@ -200,7 +277,7 @@ class Agent:
         return None
     #异步任务取消（Abort）
     def abort(self) -> None:
-        self._abort = True
+        self._aborted = True
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
 
@@ -242,7 +319,7 @@ class Agent:
             self._pre_plan_mode = self.permission_mode
             self.permission_mode = "plan"
             self._plan_file_path = self._generate_plan_file_path()
-            self._system_prompt = self._base_system_prompt + build_plan_mode_prompt(self._plan_file_path)
+            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
             print_info(f"Entered plan mode. Plan file: {self._plan_file_path}")
             return "plan"
 
@@ -263,13 +340,13 @@ class Agent:
             except Exception as e:
                 print(f"[mcp] Init failed: {e}", flush=True)
 
-        self._abort = False
+        self._aborted = False
         coro = self._chat_openai(user_message) if self.use_openai else self._chat_anthropic(user_message)
         self._current_task = asyncio.create_task(coro)
         try:
             await coro
         except asyncio.CancelledError:
-            self._abort = True
+            self._aborted = True
 
         finally:
             self._current_task = None
@@ -782,7 +859,7 @@ class Agent:
                 )
         while True:
             # 外部请求中止时，结束整个 agent loop。
-            if self._abort:
+            if self._aborted:
                 break
 
             # 每轮调用模型前尝试压缩上下文，避免消息历史过长。
@@ -875,7 +952,7 @@ class Agent:
 
             for tu in tool_uses:
                 # context_break 表示某个工具执行期间清理了上下文，需要停止继续处理本轮剩余工具。
-                if context_break or self._abort:
+                if context_break or self._aborted:
                     break
 
                 # 将工具入参转为普通 dict，便于权限检查、打印和实际执行。
@@ -997,32 +1074,255 @@ class Agent:
 
                     elif event.type == "content_block_stop":
                         tb = tool_blocks_by_index.pop(event.index, None)
+                        if tb and on_tool_block_complete:
+                            import json as _json
+                            try:
+                                parsed = _json.loads(tb["input_json"] or "{}")
+                            except Exception:
+                                parsed = {}
+                            on_tool_block_complete({
+                                "type": "tool_use", "id": tb["id"],
+                                "name": tb["name"], "input": parsed,
+                            })
+                final_message = await stream.get_final_message()
 
+            #过滤思考的message
+            final_message.content = [b for b in final_message.content if b.type != "thinking"]
+            return final_message
 
+        return await _with_retry(_do)
 
+    #openAI后端
 
+    async def _chat_openai(self, user_message:str) -> None:
+        self._openai_messages.append({"role": "user", "content": user_message})
 
+        #预取句柄 MemoryPrefetch
+        memory_prefetch: MemoryPrefetch | None = None
+        if not self.is_sub_agent:
+            sq = self._build_side_query()
+            if sq:
+                memory_prefetch = start_memory_prefetch(
+                    user_message, sq,
+                    self._already_surfaced_memories, self._session_memory_bytes,
+                )
 
+        while True:
+            if self._aborted:
+                break
 
+            self._run_compression_pipeline()
 
+            if memory_prefetch and memory_prefetch.settled and not memory_prefetch.consumed:
+                memory_prefetch.consumed = True
+                try:
+                    memories = memory_prefetch.task.result()
+                    if memories:
+                        injection_text = format_memories_for_injection(memories)
+                        last = self._openai_messages[-1] if self._openai_messages else None
 
+                        if last and last.get("role") == "user":
+                            last["content"] = (last.get("content") or "") + "\n\n" + injection_text
+                        else:
+                            self._openai_messages.append({"role": "user", "content": injection_text})
 
+                        for m in memories:
+                            self._already_surfaced_memories.add(m.path)
+                            self._session_memory_bytes += len(m.content.encode())
+                except Exception:
+                    pass
 
+            if not self.is_sub_agent:
+                start_spinner()
 
+            response = await self._call_openai_stream()
 
+            if not self.is_sub_agent:
+                stop_spinner()
 
+            self.last_api_call_time = time.time()
 
+            if response.get("usage"):
+                self.total_input_tokens += response["usage"]["prompt_tokens"]
+                self.total_output_tokens += response["usage"]["completion_tokens"]
+                self.last_input_token_count = response["usage"]["prompt_tokens"]
 
+            choice = response.get("choices", [{}])[0] if response.get("choices") else {}
+            message = choice.get("message", {})
 
+            self._openai_messages.append(message)
 
+            tool_calls = message.get("tool_calls")
 
+            if not tool_calls:
+                if not self.is_sub_agent:
+                    print_cost(self.total_input_tokens, self.total_output_tokens)
+                break
 
+            self.current_turns += 1
+            budget = self._check_budget()
+            if budget["exceeded"]:
+                print_info(f"Budget exceeded: {budget['reason']}")
+                break
 
+            oai_checked: list[dict] = []
+            for tc in tool_calls:
+                if self._aborted:
+                    break
 
+                if tc.get("type") != "function":
+                    continue
 
+                fn_name = tc["function"]["name"]
+                try:
+                    inp = json.loads(tc["function"]["arguments"])
+                except Exception:
+                    inp = {}
 
+                print_tool_call(fn_name, inp)
 
+                perm = check_permission(fn_name, inp, self.permission_mode, self._plan_file_path)
 
+                if perm["action"] == "deny":
+                    print_info(f"Denied: {perm.get('message', '')}")
+                    oai_checked.append({"tc": tc, "fn": fn_name, "inp": inp, "allowed": False,
+                                        "result": f"Action denied: {perm.get('message', '')}"})
+                    continue
+                if perm["action"] == "confirm" and perm.get("message") and perm["message"] not in self._confirmed_paths:
+                    confirmed = await self._confirm_dangerous(perm["message"])
+                    if not confirmed:
+                        oai_checked.append({"tc": tc, "fn": fn_name, "inp": inp, "allowed": False,
+                                            "result": "User denied this action."})
+                        continue
+                    self._confirmed_paths.add(perm["message"])
+                oai_checked.append({"tc": tc, "fn": fn_name, "inp": inp, "allowed": True})
 
+                oai_batches: list[dict] = []
+                for ct in oai_checked:
+                    safe = ct["allowed"] and ct["fn"] in CONCURRENCY_SAFE_TOOLS
+                    if safe and oai_batches and oai_batches[-1]["concurrent"]:
+                        oai_batches[-1]["items"].append(ct)
+                    else:
+                        oai_batches.append({"concurrent": safe, "items": [ct]})
 
+                oai_context_break = False
+                for batch in oai_batches:
+                    if oai_context_break or self._aborted:
+                        break
 
+                    if batch["concurrent"]:
+                        async def _run_oai_safe(ct_item: dict) -> tuple[dict, str]:
+                            raw = await self._execute_tool_call(ct_item["fn"], ct_item["inp"])
+                            res = self._persist_large_result(ct_item["fn"], raw)
+                            print_tool_result(ct_item["fn"], res)
+                            return ct_item, res
+
+                        results = await asyncio.gather(*[_run_oai_safe(ct) for ct in batch["items"]])
+                        for ct_item, res in results:
+                            self._openai_messages.append(
+                                {"role": "tool", "tool_call_id": ct_item["tc"]["id"], "content": res})
+                    else:
+                        for ct in batch["items"]:
+                            if not ct["allowed"]:
+                                self._openai_messages.append(
+                                    {"role": "tool", "tool_call_id": ct["tc"]["id"], "content": ct["result"]})
+                                continue
+
+                            raw = await self._execute_tool_call(ct["fn"], ct["inp"])
+                            res = self._persist_large_result(ct["fn"], raw)
+                            print_tool_result(ct["fn"], res)
+
+                            if self._context_cleared:
+                                self._context_cleared = False
+                                self._openai_messages.append({"role": "user", "content": res})
+                                oai_context_break = True
+                                break
+
+                            self._openai_messages.append(
+                                {"role": "tool", "tool_call_id": ct["tc"]["id"], "content": res})
+
+            self._context_cleared = False
+            await self._check_and_compact()
+
+    async def _call_openai_stream(self) -> dict:
+        async def _do():
+            stream = await self._openai_client.chat.completions.create(
+                model=self.model,
+                tools=_to_openai_tools(get_active_tool_definitions(self.tools)),
+                messages=self._openai_messages,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+
+            content = ""
+            first_text = True
+            tool_calls: dict[int, dict] = {}
+            finish_reason = ""
+            usage = None
+
+            async for chunk in stream:
+                if chunk.usage:
+                    usage = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                    }
+
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+
+                if delta and delta.content:
+                    if first_text:
+                        stop_spinner()
+                        self._emit_text("\n")
+                        first_text = False
+                    self._emit_text(delta.content)
+                    content += delta.content
+
+                if delta and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        existing = tool_calls.get(tc.index)
+                        if existing:
+                            if tc.function and tc.function.arguments:
+                                existing["arguments"] += tc.function.arguments
+                        else:
+                            tool_calls[tc.index] = {
+                                "id": tc.id or "",
+                                "name": (tc.function.name if tc.function else "") or "",
+                                "arguments": (tc.function.arguments if tc.function else "") or "",
+                            }
+
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+            assembled = None
+            if tool_calls:
+                assembled = [
+                    {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                    for _, tc in sorted(tool_calls.items())
+                ]
+
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": content or None,
+                        "tool_calls": assembled,
+                    },
+                    "finish_reason": finish_reason or "stop",
+                }],
+                "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0},
+            }
+
+        return await _with_retry(_do)
+
+    async def _confirm_dangerous(self, command: str) -> bool:
+        print_confirmation(command)
+        if self.confirm_fn:
+            return await self.confirm_fn(command)
+        # Fallback: blocking input
+        try:
+            answer = input("  Allow? (y/n): ")
+            return answer.lower().startswith("y")
+        except EOFError:
+            return False

@@ -24,6 +24,22 @@ EDIT_TOOLS = {"write_file", "edit_file"}
 CONCURRENCY_SAFE_TOOLS = {"read_file", "list_files", "grep_search", "web_fetch"}
 
 
+
+
+
+
+
+def get_active_tool_definitions(all_tools: list[ToolDef] | None = None) -> list[ToolDef]:
+    """过滤并返回当前可用的工具定义列表，主要用于 API 调用前剔除尚未激活的“延迟工具”（deferred tools），并删除无关的元数据字段。"""
+    tools = all_tools if all_tools is not None else tool_definitions
+    return [
+        {k: v for k, v in t.items() if k != "deferred"}
+        for t in tools
+        if not t.get("deferred") or t["name"] in _activated_tools
+    ]
+
+
+
 #工具定义
 tool_definitions: list[ToolDef] = [
     {

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agents.utils.frontmatter import parse_frontmatter, format_frontmatter
+from .frontmatter import parse_frontmatter, format_frontmatter
 from typing import Callable
 SideQueryFn = Callable[[str, str], Any]  # actually Awaitable[str]
 
