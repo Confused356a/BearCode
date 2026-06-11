@@ -184,10 +184,28 @@ tool_definitions: list[ToolDef] = [
 
 #----------------------工具调用----------------------------
 
+def _resolve_tool_path(raw_path: str, *, must_exist: bool = True) -> Path:
+    path = Path(raw_path)
+    if path.exists() or not path.is_absolute():
+        return path
+
+    parts = path.parts
+    cwd = Path.cwd()
+    for i in range(1, len(parts)):
+        candidate = cwd.joinpath(*parts[i:])
+        if must_exist and candidate.exists():
+            return candidate
+        if not must_exist and candidate.parent.exists():
+            return candidate
+
+    return path
+
+
 #读取文件并且在读取文件的基础上添加行号
 def _read_file(inp:dict) -> str:
     try:
-        content = Path(inp["file_path"]).read_text()
+        path = _resolve_tool_path(inp["file_path"])
+        content = path.read_text(errors="replace")
         lines = content.split("\n")
         numbered = "\n".join(f"{i + 1:4d} | {line}" for i, line in enumerate(lines))
         return numbered
@@ -196,7 +214,7 @@ def _read_file(inp:dict) -> str:
 
 def _write_file(inp:dict) -> str:
     try:
-        path = Path(inp["file_path"])
+        path = _resolve_tool_path(inp["file_path"], must_exist=False)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(inp["content"])
         _auto_update_memory_index(str(path))
@@ -269,8 +287,8 @@ def _generate_diff(old_content: str, old_string: str, new_string: str) -> str:
 #编辑文件
 def _edit_file(inp: dict) -> str:
     try:
-        path = Path(inp["file_path"])
-        content = path.read_text()
+        path = _resolve_tool_path(inp["file_path"])
+        content = path.read_text(errors="replace")
 
         actual = _find_actual_string(content, inp["old_string"])
         if not actual:
@@ -294,7 +312,7 @@ def _edit_file(inp: dict) -> str:
 
 def _list_files(inp: dict) -> str:
     try:
-        base = Path(inp.get("path") or ".")
+        base = _resolve_tool_path(inp.get("path") or ".")
         pattern = inp["pattern"]
         files = []
         for p in base.glob(pattern):
@@ -716,7 +734,6 @@ async def execute_tool(
 def reset_permission_cache() -> None:
     global _cached_rules
     _cached_rules = None
-
 
 
 

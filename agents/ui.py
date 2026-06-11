@@ -13,8 +13,28 @@ console = Console(highlight=False)
 # ─── Basic output ──────────────────────────────────────────
 
 
+def _safe_text(value: object) -> str:
+    return str(value).encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _safe_stdout_write(text: object) -> None:
+    sys.stdout.write(_safe_text(text))
+    sys.stdout.flush()
+
+
 def print_welcome() -> None:
-    console.print("\n  [bold cyan] Bear Code[/bold cyan][dim] — A minimal coding agent[/dim]\n")
+    cookie = r'''
+      .-""""-.
+    .'  o  o  '.
+   /      ^      \
+  |    \_____/    |
+  |   .-.___.-.   |
+   \  '-------'  /
+    '.         .'
+      '-.___.-'
+    '''
+    console.print(f"[yellow]{cookie}[/yellow]")
+    console.print("  [bold cyan] Bear Code[/bold cyan][dim] — A minimal coding agent[/dim]\n")
     console.print("[dim]  Type your request, or 'exit' to quit.[/dim]")
     console.print("[dim]  Commands: /clear /plan /cost /compact /memory /skills[/dim]\n")
 
@@ -24,17 +44,17 @@ def print_user_prompt() -> None:
 
 
 def print_assistant_text(text: str) -> None:
-    sys.stdout.write(text)
-    sys.stdout.flush()
+    _safe_stdout_write(text)
 
 
 def print_tool_call(name: str, inp: dict) -> None:
     icon = _get_tool_icon(name)
     summary = _get_tool_summary(name, inp)
-    console.print(f"\n  [yellow]{icon} {name}[/yellow][dim] {summary}[/dim]")
+    console.print(_safe_text(f"\n  [yellow]{icon} {name}[/yellow][dim] {summary}[/dim]"))
 
 
 def print_tool_result(name: str, result: str) -> None:
+    result = _safe_text(result)
     if (name in ("edit_file", "write_file")) and not result.startswith("Error"):
         _print_file_change_result(name, result)
         return
@@ -70,11 +90,11 @@ def _print_file_change_result(_name: str, result: str) -> None:
 
 
 def print_error(msg: str) -> None:
-    console.print(f"\n  [red]Error: {msg}[/red]")
+    console.print(_safe_text(f"\n  [red]Error: {msg}[/red]"))
 
 
 def print_confirmation(command: str) -> None:
-    console.print(f"\n  [yellow]⚠ Dangerous command:[/yellow] [white]{command}[/white]")
+    console.print(_safe_text(f"\n  [yellow]⚠ Dangerous command:[/yellow] [white]{command}[/white]"))
 
 
 def print_divider() -> None:
@@ -89,11 +109,11 @@ def print_cost(input_tokens: int, output_tokens: int) -> None:
 
 
 def print_retry(attempt: int, max_retries: int, reason: str) -> None:
-    console.print(f"\n  [yellow]↻ Retry {attempt}/{max_retries}: {reason}[/yellow]")
+    console.print(_safe_text(f"\n  [yellow]↻ Retry {attempt}/{max_retries}: {reason}[/yellow]"))
 
 
 def print_info(msg: str) -> None:
-    console.print(f"\n  [cyan]ℹ {msg}[/cyan]")
+    console.print(_safe_text(f"\n  [cyan]ℹ {msg}[/cyan]"))
 
 
 # ─── Spinner ──────────────────────────────────────────────
@@ -112,13 +132,11 @@ def start_spinner(label: str = "Thinking") -> None:
 
     def _run() -> None:
         frame = 0
-        sys.stdout.write(f"\n  {SPINNER_FRAMES[0]} {label}...")
-        sys.stdout.flush()
+        _safe_stdout_write(f"\n  {SPINNER_FRAMES[0]} {label}...")
         while not _spinner_stop.is_set():
             time.sleep(0.08)
             frame = (frame + 1) % len(SPINNER_FRAMES)
-            sys.stdout.write(f"\r  {SPINNER_FRAMES[frame]} {label}...")
-            sys.stdout.flush()
+            _safe_stdout_write(f"\r  {SPINNER_FRAMES[frame]} {label}...")
 
     _spinner_thread = threading.Thread(target=_run, daemon=True)
     _spinner_thread.start()
@@ -131,8 +149,7 @@ def stop_spinner() -> None:
     _spinner_stop.set()
     _spinner_thread.join(timeout=1)
     _spinner_thread = None
-    sys.stdout.write("\r\033[K")
-    sys.stdout.flush()
+    _safe_stdout_write("\r\033[K")
 
 
 # ─── Plan approval display ──────────────────────────────────

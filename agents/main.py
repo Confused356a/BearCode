@@ -7,6 +7,9 @@ import asyncio
 import os
 import signal
 import sys
+from urllib.parse import urlparse
+
+from dotenv import find_dotenv, load_dotenv
 
 from .agent import Agent
 from .ui import print_welcome, print_user_prompt, print_error, print_info, print_plan_for_approval, print_plan_approval_options
@@ -46,6 +49,57 @@ def _resolve_permission_mode(args: argparse.Namespace) -> str:
     if args.dont_ask:
         return "dontAsk"
     return "default"
+
+
+def _clean_env(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _load_env_file() -> None:
+    env_path = find_dotenv(usecwd=True)
+    if env_path:
+        load_dotenv(env_path, override=False)
+    else:
+        load_dotenv(override=False)
+
+
+def _is_anthropic_compatible_base_url(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    parsed = urlparse(base_url)
+    path = (parsed.path or "").lower().rstrip("/")
+    return path.endswith("/anthropic") or "/anthropic/" in path
+
+
+def _resolve_api_config(cli_api_base: str | None) -> tuple[str | None, str | None, bool]:
+    generic_api_key = _clean_env(os.environ.get("APIKEY")) or _clean_env(os.environ.get("MINI_CLAUDE_API_KEY"))
+    openai_api_key = _clean_env(os.environ.get("OPENAI_API_KEY"))
+    anthropic_api_key = _clean_env(os.environ.get("ANTHROPIC_API_KEY"))
+
+    generic_api_base = _clean_env(os.environ.get("API")) or _clean_env(os.environ.get("MINI_CLAUDE_API_BASE"))
+    openai_api_base = _clean_env(os.environ.get("OPENAI_BASE_URL"))
+    anthropic_api_base = _clean_env(os.environ.get("ANTHROPIC_BASE_URL"))
+
+    resolved_api_base = _clean_env(cli_api_base) or generic_api_base or openai_api_base or anthropic_api_base
+
+    if resolved_api_base:
+        if _is_anthropic_compatible_base_url(resolved_api_base):
+            return resolved_api_base, generic_api_key or anthropic_api_key or openai_api_key, False
+        return resolved_api_base, generic_api_key or openai_api_key or anthropic_api_key, True
+
+    if anthropic_api_key or anthropic_api_base:
+        return anthropic_api_base, generic_api_key or anthropic_api_key or openai_api_key, False
+
+    if openai_api_key or openai_api_base:
+        return openai_api_base, generic_api_key or openai_api_key or anthropic_api_key, True
+
+    if generic_api_key:
+        return None, generic_api_key, False
+
+    return None, None, False
 
 
 async def run_repl(agent: Agent) -> None:
@@ -192,6 +246,7 @@ def main() -> None:
     """CLI 程序入口：准备运行配置，创建 Agent，并按参数选择一次性执行或交互模式。"""
     # 解析命令行参数，例如 --plan、--resume、--model，以及可选的一次性 prompt。
     args = parse_args()
+    _load_env_file()
 
     if args.help:
         # 自定义帮助文本，展示 Bear Code 支持的启动参数和 REPL 内置命令。
@@ -205,7 +260,7 @@ Options:
   --dont-ask          Auto-deny anything needing confirmation (for CI)
   --thinking          Enable extended thinking (Anthropic only)
   --model, -m         Model to use (default: claude-opus-4-6, or MINI_CLAUDE_MODEL env)
-  --api-base URL      Use OpenAI-compatible API endpoint (key via env var)
+  --api-base URL      Override API base URL from CLI or .env
   --resume            Resume the last session
   --max-cost USD      Stop when estimated cost exceeds this amount
   --max-turns N       Stop after N agentic turns
@@ -225,7 +280,8 @@ Examples:
   mini-claude --yolo "run all tests and fix failures"
   mini-claude --plan "how would you refactor this?"
   mini-claude --max-cost 0.50 --max-turns 20 "implement feature X"
-  OPENAI_API_KEY=sk-xxx mini-claude --api-base https://aihubmix.com/v1 --model gpt-4o "hello"
+  APIKEY=sk-xxx API=https://api.deepseek.com/anthropic mini-claude --model claude-sonnet-4-6 "hello"
+  OPENAI_API_KEY=sk-xxx OPENAI_BASE_URL=https://aihubmix.com/v1 mini-claude --model gpt-4o "hello"
   mini-claude --resume
   mini-claude  # starts interactive REPL
 """)
@@ -235,42 +291,15 @@ Examples:
     permission_mode = _resolve_permission_mode(args)
     # 模型优先使用命令行参数，其次读取环境变量，最后回落到默认模型。
     model = args.model or os.environ.get("MINI_CLAUDE_MODEL", "claude-opus-4-6")
-    # api_base 只有在用户显式传入 --api-base 时才会先有值，后面还会结合环境变量补全。
-    api_base = args.api_base
-
-    # Resolve API config
-    # 下面这组变量会被归一化成 Agent 初始化所需的 provider、base URL 和 API key。
-    resolved_api_base = api_base
-    resolved_api_key: str | None = None
-    resolved_use_openai = bool(api_base)
-
-    # 同时配置 OPENAI_API_KEY 和 OPENAI_BASE_URL 时，认为使用 OpenAI-compatible 接口。
-    if os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENAI_BASE_URL"):
-        resolved_api_key = os.environ["OPENAI_API_KEY"]
-        resolved_api_base = resolved_api_base or os.environ.get("OPENAI_BASE_URL")
-        resolved_use_openai = True
-    # 否则优先尝试 Anthropic 原生接口。
-    elif os.environ.get("ANTHROPIC_API_KEY"):
-        resolved_api_key = os.environ["ANTHROPIC_API_KEY"]
-        resolved_api_base = resolved_api_base or os.environ.get("ANTHROPIC_BASE_URL")
-        resolved_use_openai = False
-    # 只配置 OPENAI_API_KEY 时，也按 OpenAI-compatible 接口处理，base URL 可为空或由 --api-base 提供。
-    elif os.environ.get("OPENAI_API_KEY"):
-        resolved_api_key = os.environ["OPENAI_API_KEY"]
-        resolved_api_base = resolved_api_base or os.environ.get("OPENAI_BASE_URL")
-        resolved_use_openai = True
-
-    # 用户传了 --api-base 但没有命中上面的 provider 分支时，尽量从任一 API key 环境变量兜底。
-    if not resolved_api_key and api_base:
-        resolved_api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-        resolved_use_openai = True
+    resolved_api_base, resolved_api_key, resolved_use_openai = _resolve_api_config(args.api_base)
 
     # 没有可用 API key 时无法调用模型，直接提示配置方式并退出。
     if not resolved_api_key:
         print_error(
             "API key is required.\n"
-            "  Set ANTHROPIC_API_KEY (+ optional ANTHROPIC_BASE_URL) for Anthropic format,\n"
-            "  or OPENAI_API_KEY + OPENAI_BASE_URL for OpenAI-compatible format."
+            "  Set APIKEY (+ optional API) in .env for generic config,\n"
+            "  or use ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL,\n"
+            "  or use OPENAI_API_KEY / OPENAI_BASE_URL."
         )
         sys.exit(1)
 

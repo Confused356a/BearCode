@@ -7,7 +7,6 @@ import os
 import uuid
 import time
 from pathlib import Path
-from pyexpat.errors import messages
 from typing import Callable, Awaitable, Any
 
 from agents.mcp_client import McpManager
@@ -125,14 +124,16 @@ class Agent:
         self.max_cost_usd = max_cost_usd
         self.max_turns = max_turns
         self.confirm_fn = confirm_fn
-        self.effective_windos=_get_context_windows(model) -20000
+        self.effective_window=_get_context_windows(model) -20000
         self.session_id = uuid.uuid4().hex[:8]
         self.session_start_time= time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())
+
         self.total_input_tokens = 0
         self.total_output_tokens = 0
-        self.last_input_tokens = 0
+        self.last_input_token_count = 0
         self.current_turns = 0
         self.last_api_call_time = 0
+
 
         self._aborted = False
         #存储异步任务
@@ -189,7 +190,7 @@ class Agent:
             if api_key:
                 kwargs["api_key"] = api_key
             if anthropic_base_url:
-                kwargs["anthropic_base_url"] = anthropic_base_url
+                kwargs["base_url"] = anthropic_base_url
             self._anthropic_client = anthropic.AsyncAnthropic(**kwargs)
             self._openai_client = None
 
@@ -344,7 +345,7 @@ class Agent:
         coro = self._chat_openai(user_message) if self.use_openai else self._chat_anthropic(user_message)
         self._current_task = asyncio.create_task(coro)
         try:
-            await coro
+            await self._current_task
         except asyncio.CancelledError:
             self._aborted = True
 
@@ -388,7 +389,7 @@ class Agent:
             self._openai_messages.append({"role": "system", "content":self._system_prompt})
         self.total_input_tokens = 0
         self.total_output_tokens = 0
-        self.last_input_tokens = 0;
+        self.last_input_token_count = 0
         print_info("Conversation cleared.")
 
     def show_cost(self):
@@ -418,10 +419,21 @@ class Agent:
     #恢复会话信息
     def restore_session(self, data:dict)->None:
         if data.get("anthropicMessages"):
-            self._anthropic_messages = data["anthropicMessages"]
+            self._anthropic_messages = self._normalize_anthropic_messages(data["anthropicMessages"])
         if data.get("openaiMessages"):
             self._openai_messages = data["openaiMessages"]
         print_info(f"Session restored ({self._get_message_count()} messages).")
+
+    def _normalize_anthropic_messages(self, messages: list[dict]) -> list[dict]:
+        normalized = []
+        for msg in messages:
+            copied = dict(msg)
+            content = copied.get("content")
+            if copied.get("role") == "user" and isinstance(content, list):
+                if any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content):
+                    copied["role"] = "assistant"
+            normalized.append(copied)
+        return normalized
 
     def _get_message_count(self) -> int:
         return len(self._openai_messages) if self.use_openai else len(self._anthropic_messages)
@@ -444,7 +456,7 @@ class Agent:
 
     #自动压缩
     async def _check_and_compact(self)->None:
-        if self.last_input_tokens>self.effective_windos*0.85:
+        if self.last_input_token_count>self.effective_window*0.85:
             print_info("Context window filling up, compacting conversation...")
             await self._compact_conversation()
 
@@ -518,7 +530,7 @@ class Agent:
     #第一层级压缩，预算压缩
     def _budget_tool_results_anthropic(self)->None:
         #计算利用率：utilization = 已用Token / 有效窗口大小。
-        utilization = self.last_input_token_count / self.effective_windos if self.effective_windos else 0
+        utilization = self.last_input_token_count / self.effective_window if self.effective_window else 0
         #如果利用率低于 50%，说明空间还很充裕，直接返回，不做任何处理。
         if utilization < 0.5:
             return
@@ -541,7 +553,7 @@ class Agent:
 
     def _budget_tool_results_openai(self)->None:
         #计算利用率：utilization = 已用Token / 有效窗口大小。
-        utilization = self.last_input_token_count / self.effective_windos if self.effective_windos else 0
+        utilization = self.last_input_token_count / self.effective_window if self.effective_window else 0
         #如果利用率低于 50%，说明空间还很充裕，直接返回，不做任何处理。
         if utilization < 0.5:
             return
@@ -928,7 +940,7 @@ class Agent:
 
             # 把模型返回的所有 content block 写入消息历史，后续 tool_result 要与这些 tool_use 对应。
             self._anthropic_messages.append({
-                "role": "user",
+                "role": "assistant",
                 "content": [self._block_to_dict(b) for b in response.content],
             })
 
