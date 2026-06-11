@@ -2,7 +2,7 @@
 MCP Client — connects to stdio-based MCP servers, discovers and forwards tool calls.
 Uses raw JSON-RPC over stdio (no SDK dependency for simplicity).
 
-Config is read from .claude/settings.json and ~/.claude/settings.json:
+Config is read from .bear/settings.json and ~/.bear/settings.json:
   { "mcpServers": { "name": { "command": "...", "args": [...], "env": {...} } } }
 
 Each MCP tool is exposed with a "mcp__serverName__toolName" prefix to avoid conflicts.
@@ -223,12 +223,12 @@ class McpManager:
     def _load_configs(self) -> dict[str, dict]:
         merged: dict[str, dict] = {}
 
-        # 1. Global: ~/.claude/settings.json
-        global_path = Path.home() / ".claude" / "settings.json"
+        # 1. Global: ~/.bear/settings.json
+        global_path = Path.home() / ".bear" / "settings.json"
         self._merge_config_file(global_path, merged)
 
-        # 2. Project: .claude/settings.json (cwd)
-        project_path = Path.cwd() / ".claude" / "settings.json"
+        # 2. Project: .bear/settings.json (cwd)
+        project_path = Path.cwd() / ".bear" / "settings.json"
         self._merge_config_file(project_path, merged)
 
         # 3. Also check .mcp.json (Claude Code convention)

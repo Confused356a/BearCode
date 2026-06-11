@@ -57,11 +57,13 @@ def discover_skills() -> list[SkillDefinition]:
     skills: dict[str,SkillDefinition] = {}
     user_dir = Path.home() / ".bear" / "skills"
     _load_skills_from_dir(user_dir, "user", skills)
+    project_dir = Path.cwd() / ".bear" / "skills"
+    _load_skills_from_dir(project_dir, "project", skills, overwrite=False)
 
     _cached_skills = list(skills.values())
     return _cached_skills
 
-def _load_skills_from_dir( base_dir: Path, source: str, skills:dict[str, SkillDefinition]) -> None:
+def _load_skills_from_dir( base_dir: Path, source: str, skills:dict[str, SkillDefinition], overwrite: bool = True) -> None:
     if not base_dir.is_dir():
         return
     for entry in base_dir.iterdir():
@@ -72,6 +74,8 @@ def _load_skills_from_dir( base_dir: Path, source: str, skills:dict[str, SkillDe
             continue
         skill = _parse_skill_file(skill_file, source, str(entry))
         if skill:
+            if not overwrite and skill.name in skills:
+                continue
             skills[skill.name] = skill
 
 def _parse_skill_file(file_path: Path, source: str, skill_dir: str) -> SkillDefinition:
@@ -129,7 +133,8 @@ def build_skill_descriptions() -> str:
         lines.append("")
 
     if auto_only:
-        lines.append("Auto-invocable skills (use the skill tool when appropriate):")
+        lines.append("Auto-invocable skills:")
+        lines.append("When the user's request matches a skill's When to use, call the `skill` tool with that skill name before continuing. Do not ask the user to invoke it manually.")
         for s in auto_only:
             lines.append(f"- **{s.name}**: {s.description}")
             if s.when_to_use:
@@ -143,9 +148,6 @@ def build_skill_descriptions() -> str:
 def reset_skill_cache() -> None:
     global _cached_skills
     _cached_skills = None
-
-
-
 
 
 

@@ -7,6 +7,7 @@ import threading
 import time
 
 from rich.console import Console
+from rich.text import Text
 
 console = Console(highlight=False)
 
@@ -23,17 +24,6 @@ def _safe_stdout_write(text: object) -> None:
 
 
 def print_welcome() -> None:
-    cookie = r'''
-      .-""""-.
-    .'  o  o  '.
-   /      ^      \
-  |    \_____/    |
-  |   .-.___.-.   |
-   \  '-------'  /
-    '.         .'
-      '-.___.-'
-    '''
-    console.print(f"[yellow]{cookie}[/yellow]")
     console.print("  [bold cyan] Bear Code[/bold cyan][dim] — A minimal coding agent[/dim]\n")
     console.print("[dim]  Type your request, or 'exit' to quit.[/dim]")
     console.print("[dim]  Commands: /clear /plan /cost /compact /memory /skills[/dim]\n")

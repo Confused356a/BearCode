@@ -37,6 +37,25 @@ def _is_retryable(error: Exception) -> bool:
     return False
 
 
+def _safe_utf8_text(value: object) -> str:
+    return str(value).encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _sanitize_for_utf8(value: Any) -> Any:
+    if isinstance(value, str):
+        return _safe_utf8_text(value)
+    if isinstance(value, list):
+        return [_sanitize_for_utf8(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_for_utf8(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_for_utf8(key): _sanitize_for_utf8(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 async def _with_retry(fn, max_retries: int = 3):
     for attempt in range(max_retries + 1):
         try:
@@ -218,7 +237,7 @@ class Agent:
 
     #生成一个用于保存 AI 计划（Plan）的 Markdown 文件的绝对路径。
     def _generate_plan_file_path(self) -> str:
-        d = Path.home() / ".claude" / "plans"
+        d = Path.home() / ".bear" / "plans"
         d.mkdir(parents=True, exist_ok=True)
         return str(d / f"plan-{self.session_id}.md")
 
@@ -375,6 +394,7 @@ class Agent:
 
     #输出工具
     def _emit_text(self, text:str)->None:
+        text = _safe_utf8_text(text)
         if self._output_buffer is not None:
             self._output_buffer.append(text)
         else:
@@ -419,21 +439,61 @@ class Agent:
     #恢复会话信息
     def restore_session(self, data:dict)->None:
         if data.get("anthropicMessages"):
-            self._anthropic_messages = self._normalize_anthropic_messages(data["anthropicMessages"])
+            self._anthropic_messages = self._normalize_anthropic_messages(_sanitize_for_utf8(data["anthropicMessages"]))
         if data.get("openaiMessages"):
-            self._openai_messages = data["openaiMessages"]
+            self._openai_messages = _sanitize_for_utf8(data["openaiMessages"])
         print_info(f"Session restored ({self._get_message_count()} messages).")
 
     def _normalize_anthropic_messages(self, messages: list[dict]) -> list[dict]:
-        normalized = []
+        role_normalized = []
         for msg in messages:
             copied = dict(msg)
             content = copied.get("content")
             if copied.get("role") == "user" and isinstance(content, list):
                 if any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content):
                     copied["role"] = "assistant"
-            normalized.append(copied)
+            role_normalized.append(copied)
+
+        normalized = []
+        i = 0
+        while i < len(role_normalized):
+            msg = role_normalized[i]
+            tool_use_ids = self._anthropic_tool_use_ids(msg)
+            if not tool_use_ids:
+                normalized.append(msg)
+                i += 1
+                continue
+
+            next_msg = role_normalized[i + 1] if i + 1 < len(role_normalized) else None
+            result_ids = self._anthropic_tool_result_ids(next_msg) if next_msg else set()
+            if tool_use_ids.issubset(result_ids):
+                normalized.append(msg)
+                normalized.append(next_msg)
+                i += 2
+                continue
+
+            i += 1
         return normalized
+
+    @staticmethod
+    def _anthropic_tool_use_ids(msg: dict | None) -> set[str]:
+        if not msg or msg.get("role") != "assistant" or not isinstance(msg.get("content"), list):
+            return set()
+        return {
+            block.get("id")
+            for block in msg["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id")
+        }
+
+    @staticmethod
+    def _anthropic_tool_result_ids(msg: dict | None) -> set[str]:
+        if not msg or msg.get("role") != "user" or not isinstance(msg.get("content"), list):
+            return set()
+        return {
+            block.get("tool_use_id")
+            for block in msg["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id")
+        }
 
     def _get_message_count(self) -> int:
         return len(self._openai_messages) if self.use_openai else len(self._anthropic_messages)
@@ -448,8 +508,8 @@ class Agent:
                     "startTime": self.session_start_time,
                     "messageCount": self._get_message_count(),
                 },
-                "anthropicMessages": self._anthropic_messages if not self.use_openai else None,
-                "openaiMessages": self._openai_messages if self.use_openai else None,
+                "anthropicMessages": _sanitize_for_utf8(self._anthropic_messages) if not self.use_openai else None,
+                "openaiMessages": _sanitize_for_utf8(self._openai_messages) if self.use_openai else None,
             })
         except Exception:
             pass
@@ -477,7 +537,7 @@ class Agent:
             max_tokens=2048,
             system ="You are a conversation summarizer. Be concise but preserve important details.",
             messages=[
-                *self._anthropic_messages[:-1],
+                *_sanitize_for_utf8(self._anthropic_messages[:-1]),
                 {"role":"user",
                  "content":"Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work."
                 }
@@ -856,6 +916,8 @@ class Agent:
 
 #--------------Anthropic 后端---------------
     async def  _chat_anthropic(self, user_message: str) -> None:
+        self._anthropic_messages = self._normalize_anthropic_messages(_sanitize_for_utf8(self._anthropic_messages))
+        user_message = _safe_utf8_text(user_message)
         # 先把本轮用户输入放入 Anthropic 消息历史，后续每轮模型调用都会带上这段上下文。
         self._anthropic_messages.append({"role": "user", "content": user_message})
 
@@ -885,6 +947,7 @@ class Agent:
                     memories = memory_prefetch.task.result()
                     if memories:
                         injection_text = format_memories_for_injection(memories)
+                        injection_text = _safe_utf8_text(injection_text)
                         last = self._anthropic_messages[-1] if self._anthropic_messages else None
                         if last and last.get("role") == "user":
                             content = last.get("content", "")
@@ -955,6 +1018,17 @@ class Agent:
             budget = self._check_budget()
             if budget["exceeded"]:
                 print_info(f"Budget exceeded: {budget['reason']}")
+                self._anthropic_messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tu.id,
+                            "content": f"Tool execution skipped: {budget['reason']}",
+                        }
+                        for tu in tool_uses
+                    ],
+                })
                 break
 
 
@@ -974,7 +1048,11 @@ class Agent:
                 # 如果这个工具已经在流式阶段提前开始执行，这里只需要等待它完成并收集结果。
                 early_task = early_executions.get(tu.id)
                 if early_task:
-                    raw = await early_task
+                    try:
+                        raw = await early_task
+                    except Exception as e:
+                        raw = f"Error executing tool: {e}"
+                    raw = _safe_utf8_text(raw)
                     res = self._persist_large_result(tu.name, raw)
                     print_tool_result(tu.name, res)
                     tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": res})
@@ -1000,7 +1078,11 @@ class Agent:
                     self._confirmed_paths.add(perm["message"])
 
                 # 权限通过后执行工具，并把大输出持久化为可回传的摘要或引用。
-                raw = await self._execute_tool_call(tu.name, inp)
+                try:
+                    raw = await self._execute_tool_call(tu.name, inp)
+                except Exception as e:
+                    raw = f"Error executing tool: {e}"
+                raw = _safe_utf8_text(raw)
                 res = self._persist_large_result(tu.name, raw)
                 print_tool_result(tu.name, res)
 
@@ -1015,22 +1097,25 @@ class Agent:
                 # Anthropic 要求 tool_result 使用 tool_use_id 对应到前面的 tool_use block。
                 tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": res})
 
-                if not context_break and tool_results:
-                    # 把当前累计的工具结果追加到消息历史，下一轮模型调用即可读取这些结果。
-                    self._anthropic_messages.append({"role": "user", "content": tool_results})
-                self._context_cleared = False
+            if not context_break and tool_results:
+                # Anthropic 要求 assistant/tool_use 后面紧跟一条 user/tool_result 消息，
+                # 且这条消息必须包含本轮所有 tool_use 的对应结果。
+                self._anthropic_messages.append({"role": "user", "content": tool_results})
 
-                # 工具结果可能很长，每次工具执行后检查是否需要压缩上下文。
-                await self._check_and_compact()
+            self._context_cleared = False
+
+            # 工具结果可能很长，每轮工具执行后检查是否需要压缩上下文。
+            await self._check_and_compact()
 
     @staticmethod
     def _block_to_dict(block) -> dict:
         if block.type == "text":
-            return {"type": "text", "text": block.text}
+            return {"type": "text", "text": _safe_utf8_text(block.text)}
         if block.type == "tool_use":
-            return {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.input) if hasattr(block.input, 'items') else block.input}
+            raw_input = dict(block.input) if hasattr(block.input, 'items') else block.input
+            return {"type": "tool_use", "id": _safe_utf8_text(block.id), "name": _safe_utf8_text(block.name), "input": _sanitize_for_utf8(raw_input)}
         # Fallback
-        return {"type": block.type}
+        return {"type": _safe_utf8_text(block.type)}
 
     async def _call_anthropic_stream(self, on_tool_block_complete=None):
 
@@ -1040,9 +1125,9 @@ class Agent:
             create_params: dict[str, Any] = {
                 "model": self.model,
                 "max_tokens": max_output if self._thinking_mode != "disabled" else 16384,
-                "system": self._system_prompt,
-                "tools": get_active_tool_definitions(self.tools),
-                "messages": self._anthropic_messages,
+                "system": _safe_utf8_text(self._system_prompt),
+                "tools": _sanitize_for_utf8(get_active_tool_definitions(self.tools)),
+                "messages": _sanitize_for_utf8(self._anthropic_messages),
             }
 
             if self._thinking_mode  in ("adaptive", "enabled"):
@@ -1082,7 +1167,7 @@ class Agent:
                         elif hasattr(delta, 'partial_json'):
                             tb = tool_blocks_by_index.get(event.index)
                             if tb:
-                                tb["input_json"] += delta.partial_json
+                                tb["input_json"] += _safe_utf8_text(delta.partial_json)
 
                     elif event.type == "content_block_stop":
                         tb = tool_blocks_by_index.pop(event.index, None)
@@ -1093,8 +1178,8 @@ class Agent:
                             except Exception:
                                 parsed = {}
                             on_tool_block_complete({
-                                "type": "tool_use", "id": tb["id"],
-                                "name": tb["name"], "input": parsed,
+                                "type": "tool_use", "id": _safe_utf8_text(tb["id"]),
+                                "name": _safe_utf8_text(tb["name"]), "input": _sanitize_for_utf8(parsed),
                             })
                 final_message = await stream.get_final_message()
 
@@ -1107,6 +1192,7 @@ class Agent:
     #openAI后端
 
     async def _chat_openai(self, user_message:str) -> None:
+        user_message = _safe_utf8_text(user_message)
         self._openai_messages.append({"role": "user", "content": user_message})
 
         #预取句柄 MemoryPrefetch
@@ -1131,6 +1217,7 @@ class Agent:
                     memories = memory_prefetch.task.result()
                     if memories:
                         injection_text = format_memories_for_injection(memories)
+                        injection_text = _safe_utf8_text(injection_text)
                         last = self._openai_messages[-1] if self._openai_messages else None
 
                         if last and last.get("role") == "user":
@@ -1225,6 +1312,7 @@ class Agent:
                     if batch["concurrent"]:
                         async def _run_oai_safe(ct_item: dict) -> tuple[dict, str]:
                             raw = await self._execute_tool_call(ct_item["fn"], ct_item["inp"])
+                            raw = _safe_utf8_text(raw)
                             res = self._persist_large_result(ct_item["fn"], raw)
                             print_tool_result(ct_item["fn"], res)
                             return ct_item, res
@@ -1241,6 +1329,7 @@ class Agent:
                                 continue
 
                             raw = await self._execute_tool_call(ct["fn"], ct["inp"])
+                            raw = _safe_utf8_text(raw)
                             res = self._persist_large_result(ct["fn"], raw)
                             print_tool_result(ct["fn"], res)
 
@@ -1260,8 +1349,8 @@ class Agent:
         async def _do():
             stream = await self._openai_client.chat.completions.create(
                 model=self.model,
-                tools=_to_openai_tools(get_active_tool_definitions(self.tools)),
-                messages=self._openai_messages,
+                tools=_sanitize_for_utf8(_to_openai_tools(get_active_tool_definitions(self.tools))),
+                messages=_sanitize_for_utf8(self._openai_messages),
                 stream=True,
                 stream_options={"include_usage": True},
             )
@@ -1289,19 +1378,19 @@ class Agent:
                         self._emit_text("\n")
                         first_text = False
                     self._emit_text(delta.content)
-                    content += delta.content
+                    content += _safe_utf8_text(delta.content)
 
                 if delta and delta.tool_calls:
                     for tc in delta.tool_calls:
                         existing = tool_calls.get(tc.index)
                         if existing:
                             if tc.function and tc.function.arguments:
-                                existing["arguments"] += tc.function.arguments
+                                existing["arguments"] += _safe_utf8_text(tc.function.arguments)
                         else:
                             tool_calls[tc.index] = {
-                                "id": tc.id or "",
-                                "name": (tc.function.name if tc.function else "") or "",
-                                "arguments": (tc.function.arguments if tc.function else "") or "",
+                                "id": _safe_utf8_text(tc.id or ""),
+                                "name": _safe_utf8_text((tc.function.name if tc.function else "") or ""),
+                                "arguments": _safe_utf8_text((tc.function.arguments if tc.function else "") or ""),
                             }
 
                 if chunk.choices[0].finish_reason:

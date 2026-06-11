@@ -117,7 +117,7 @@ tool_definitions: list[ToolDef] = [
     },
     {
         "name": "skill",
-        "description": "Invoke a registered skill by name. Skills are prompt templates loaded from .claude/skills/. Returns the skill's resolved prompt to follow.",
+        "description": "Invoke a registered skill by name. Skills are prompt templates loaded from .bear/skills/. Returns the skill's resolved prompt to follow.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -337,7 +337,7 @@ def _list_files(inp: dict) -> str:
 
 def _grep_search(inp: dict) -> str:
     pattern = inp["pattern"]
-    path = inp.get("path") or "."
+    path = str(_resolve_tool_path(inp.get("path") or "."))
     include = inp.get("include")
 
     if not IS_WIN:
@@ -345,7 +345,7 @@ def _grep_search(inp: dict) -> str:
             args = ["grep", "--line-number", "--color=never", "-r"]
             if include:
                 args.append(f"--include={include}")
-            args.append(["--", pattern, path])
+            args.extend(["--", pattern, path])
 
             result = subprocess.run(
                 args, capture_output=True, text=True, timeout=10
@@ -640,10 +640,10 @@ def check_permission(
     if tool_name == "run_shell" and is_dangerous(inp.get("command", "")):
         needs_confirm = True
         confirm_message = inp.get("command", "")
-    elif tool_name == "write_file" and not Path(inp.get("file_path", "")).exists():
+    elif tool_name == "write_file" and not _resolve_tool_path(inp.get("file_path", ""), must_exist=False).exists():
         needs_confirm = True
         confirm_message = f"write new file: {inp.get('file_path', '')}"
-    elif tool_name == "edit_file" and not Path(inp.get("file_path", "")).exists():
+    elif tool_name == "edit_file" and not _resolve_tool_path(inp.get("file_path", "")).exists():
         needs_confirm = True
         confirm_message = f"edit non-existent file: {inp.get('file_path', '')}"
 
@@ -668,7 +668,7 @@ async def execute_tool(
     if name == "read_file":
         result = _read_file(inp)
         if read_file_state is not None and not result.startswith("Error"):
-            abs_path = str(Path(inp["file_path"]).resolve())
+            abs_path = str(_resolve_tool_path(inp["file_path"]).resolve())
             try:
                 read_file_state[abs_path] =  os.path.getmtime(abs_path)
             except OSError:
@@ -676,7 +676,7 @@ async def execute_tool(
         return _truncate_result(result)
 
     if name in ("write_file", "edit_file") and read_file_state is not None:
-        abs_path = str(Path(inp["file_path"]).resolve())
+        abs_path = str(_resolve_tool_path(inp["file_path"], must_exist=(name == "edit_file")).resolve())
         if os.path.exists(abs_path):
             if abs_path not in read_file_state:
                 verb = "writing" if name == "write_file" else "editing"
@@ -721,7 +721,7 @@ async def execute_tool(
 
     # 更新时间
     if name in ("write_file", "edit_file") and read_file_state is not None and not result.startswith("Error"):
-        abs_path = str(Path(inp["file_path"]).resolve())
+        abs_path = str(_resolve_tool_path(inp["file_path"], must_exist=False).resolve())
         try:
             read_file_state[abs_path] = os.path.getmtime(abs_path)
         except OSError:
@@ -734,9 +734,6 @@ async def execute_tool(
 def reset_permission_cache() -> None:
     global _cached_rules
     _cached_rules = None
-
-
-
 
 
 
