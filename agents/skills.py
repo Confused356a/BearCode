@@ -9,6 +9,7 @@ from .frontmatter import parse_frontmatter
 
 @dataclass
 class SkillDefinition:
+    # 一个 skill 在程序内的统一表示，由 SKILL.md 的 frontmatter 和正文解析得到。
     name: str
     description: str
     when_to_use: str | None = None
@@ -20,10 +21,12 @@ class SkillDefinition:
     skill_dir: str = ""
 
 
+# skills 只在首次读取时扫描磁盘，后续复用缓存；修改 skill 后需要重启或 reset。
 _cached_skills: list[SkillDefinition] | None = None
 
 
 def execute_skill(skill_name:str, args:dict)-> dict | None:
+    # skill 工具的执行入口：按名字找到 skill，并返回解析后的 prompt 和执行配置。
     skill = get_skill_by_name(skill_name)
     if not skill:
         return None
@@ -39,11 +42,14 @@ def execute_skill(skill_name:str, args:dict)-> dict | None:
 def resolve_skill_prompt(skill: SkillDefinition, args: str) -> str:
     import re
     prompt = skill.prompt_template
+    # 支持在 SKILL.md 正文中使用 $ARGUMENTS 或 ${ARGUMENTS} 引用用户参数。
     prompt = re.sub(r"\$ARGUMENTS|\$\{ARGUMENTS\}", args, prompt)
+    # 支持 skill 引用自己的目录，例如读取同目录下的 references/scripts。
     prompt = prompt.replace("${CLAUDE_SKILL_DIR}", skill.skill_dir)
     return prompt
 
 def get_skill_by_name(skill_name:str)->SkillDefinition | None:
+    # 通过 name 查找 skill；name 来自 frontmatter，没有写时使用目录名。
     for s in discover_skills():
         if s.name == skill_name:
             return s
@@ -55,8 +61,10 @@ def discover_skills() -> list[SkillDefinition]:
         return _cached_skills
 
     skills: dict[str,SkillDefinition] = {}
+    # 用户级 skills 优先级最高：~/.bear/skills/<name>/SKILL.md
     user_dir = Path.home() / ".bear" / "skills"
     _load_skills_from_dir(user_dir, "user", skills)
+    # 项目级 skills 优先级较低：<cwd>/.bear/skills/<name>/SKILL.md
     project_dir = Path.cwd() / ".bear" / "skills"
     _load_skills_from_dir(project_dir, "project", skills, overwrite=False)
 
@@ -64,26 +72,31 @@ def discover_skills() -> list[SkillDefinition]:
     return _cached_skills
 
 def _load_skills_from_dir( base_dir: Path, source: str, skills:dict[str, SkillDefinition], overwrite: bool = True) -> None:
+    # 只加载目录形式的 skill，不加载 .bear/skills/foo.md 这种单文件形式。
     if not base_dir.is_dir():
         return
     for entry in base_dir.iterdir():
         if not entry.is_dir():
             continue
+        # 文件名必须是 SKILL.md，大小写要一致。
         skill_file = entry/  "SKILL.md"
         if not skill_file.exists():
             continue
         skill = _parse_skill_file(skill_file, source, str(entry))
         if skill:
+            # 项目级加载时 overwrite=False，避免覆盖同名用户级 skill。
             if not overwrite and skill.name in skills:
                 continue
             skills[skill.name] = skill
 
 def _parse_skill_file(file_path: Path, source: str, skill_dir: str) -> SkillDefinition:
     try:
+        # SKILL.md = frontmatter 配置 + markdown 正文。
         raw = file_path.read_text()
         result = parse_frontmatter(raw)
         meta = result.meta
 
+        # name 没写时用目录名；user-invocable 默认 true；context 默认 inline。
         name = meta.get("name") or file_path.parent.name or "unknown"
         user_invocable = meta.get("user-invocable", "true") != "false"
         context = "fork" if meta.get("context") == "fork" else "inline"
@@ -91,6 +104,7 @@ def _parse_skill_file(file_path: Path, source: str, skill_dir: str) -> SkillDefi
         allowed_tools: list[str] | None = None
         if "allowed-tools" in meta:
             raw_tools = meta["allowed-tools"]
+            # allowed-tools 支持 JSON 数组字符串，也支持逗号分隔。
             if raw_tools.startswith("["):
                 try:
                     allowed_tools = json.loads(raw_tools)
@@ -116,12 +130,15 @@ def _parse_skill_file(file_path: Path, source: str, skill_dir: str) -> SkillDefi
 
 
 def build_skill_descriptions() -> str:
+    # 把已加载的 skills 写进 system prompt，让模型知道哪些 skill 可用。
     skills = discover_skills()
     if not skills:
         return ""
 
     lines = ["# Available Skills", ""]
+    # user_invocable=True 的 skill 主要给用户通过 /<name> 手动调用。
     invocable = [s for s in skills if s.user_invocable]
+    # user_invocable=False 的 skill 作为自动调用候选，模型根据 when_to_use 决定是否调用 skill 工具。
     auto_only = [s for s in skills if not s.user_invocable]
 
     if invocable:
@@ -146,9 +163,9 @@ def build_skill_descriptions() -> str:
 
 
 def reset_skill_cache() -> None:
+    # 测试或运行中刷新 skills 时使用；普通用户通常重启程序即可。
     global _cached_skills
     _cached_skills = None
-
 
 
 

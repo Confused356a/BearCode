@@ -1,7 +1,12 @@
 """
-记忆系统：采用基于文件的四分类记忆
-    并以 MEMORY.md 作为索引。它复刻了 Claude Code 的记忆架构
-    通过 sideQuery（侧边查询）来实现语义检索。”
+文件型记忆系统。
+
+核心思路：
+1. 每个项目有独立的 memory 目录，目录名由当前工作目录 hash 得到。
+2. 每条记忆都是一个 Markdown 文件，文件头部用 YAML frontmatter 保存元信息。
+3. MEMORY.md 是自动生成的索引，给 system prompt 快速展示已有记忆。
+4. 对话时先轻量扫描记忆文件头，再用 side query 让模型挑出相关记忆。
+5. 召回到的记忆会以 <system-reminder> 形式注入当前对话。
 """
 
 from __future__ import annotations
@@ -17,16 +22,19 @@ from typing import Any
 
 from .frontmatter import parse_frontmatter, format_frontmatter
 from typing import Callable
+# side query 是一个异步函数：输入 system prompt 和 user prompt，返回模型文本。
+# 这里标成 Any 是为了避免在运行时引入复杂 Awaitable 类型约束。
 SideQueryFn = Callable[[str, str], Any]  # actually Awaitable[str]
 
-# ─── Types ──────────────────────────────────────────────────
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
-MAX_INDEX_LINES = 200
-MAX_INDEX_BYTES = 25000
+MAX_INDEX_LINES = 200       # MEMORY.md 注入 system prompt 前最多保留的行数。
+MAX_INDEX_BYTES = 25000     # MEMORY.md 注入 system prompt 前最多保留的字节数。
 
 
 class MemoryEntry:
+    """完整 memory 条目，用于 /memory 列表和 CRUD 操作。"""
+
     __slots__ = ("name", "description", "type", "filename", "content")
 
     def __init__(self, name: str, description: str, type: str, filename: str, content: str):
@@ -40,42 +48,48 @@ class MemoryEntry:
 
 
 def _project_hash() -> str:
+    """用当前工作目录生成稳定 hash，让不同项目的记忆互相隔离。"""
     return hashlib.sha256(str(Path.cwd()).encode()).hexdigest()[:16]
 
 
 def get_memory_dir() -> Path:
+    """返回当前项目的 memory 目录，不存在时自动创建。"""
     d = Path.home() / ".BearCode" / "projects" / _project_hash() / "memory"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _get_index_path() -> Path:
+    """MEMORY.md 是当前项目 memory 文件的索引文件。"""
     return get_memory_dir() / "MEMORY.md"
 
 
-# ─── Slugify ────────────────────────────────────────────────
 
 
 def _slugify(text: str) -> str:
+    """把记忆名称转成适合文件名的短 slug。"""
     s = re.sub(r"[^a-z0-9]+", "_", text.lower())
     s = s.strip("_")
     return s[:40]
 
 
-# ─── CRUD ───────────────────────────────────────────────────
 
 
 def list_memories() -> list[MemoryEntry]:
+    """读取当前项目所有 memory 文件，并按修改时间倒序返回。"""
     d = get_memory_dir()
     entries: list[MemoryEntry] = []
     for f in sorted(d.glob("*.md")):
+        # MEMORY.md 是索引，不是一条真实记忆。
         if f.name == "MEMORY.md":
             continue
         try:
             result = parse_frontmatter(f.read_text())
             meta = result.meta
+            # 没有 name/type 的文件不算合法 memory。
             if not meta.get("name") or not meta.get("type"):
                 continue
+            # type 不合法时降级为 project，避免坏文件中断列表。
             t = meta["type"] if meta["type"] in VALID_TYPES else "project"
             entries.append(MemoryEntry(
                 name=meta["name"],
@@ -86,12 +100,13 @@ def list_memories() -> list[MemoryEntry]:
             ))
         except Exception:
             pass
-    # Sort by mtime desc
+    # 最近修改的记忆排在前面，方便 /memory 展示。
     entries.sort(key=lambda e: (d / e.filename).stat().st_mtime, reverse=True)
     return entries
 
 
 def save_memory(name: str, description: str, type: str, content: str) -> str:
+    """保存一条 memory，并刷新 MEMORY.md 索引。"""
     d = get_memory_dir()
     filename = f"{type}_{_slugify(name)}.md"
     text = format_frontmatter({"name": name, "description": description, "type": type}, content)
@@ -101,6 +116,7 @@ def save_memory(name: str, description: str, type: str, content: str) -> str:
 
 
 def delete_memory(filename: str) -> bool:
+    """按文件名删除 memory，删除成功后刷新索引。"""
     filepath = get_memory_dir() / filename
     if not filepath.exists():
         return False
@@ -112,6 +128,7 @@ def delete_memory(filename: str) -> bool:
 
 
 def _update_memory_index() -> None:
+    """根据当前 memory 文件重新生成 MEMORY.md。"""
     memories = list_memories()
     lines = ["# Memory Index", ""]
     for m in memories:
@@ -120,6 +137,7 @@ def _update_memory_index() -> None:
 
 
 def load_memory_index() -> str:
+    """读取 MEMORY.md，并在注入 system prompt 前做长度保护。"""
     index_path = _get_index_path()
     if not index_path.exists():
         return ""
@@ -135,6 +153,8 @@ def load_memory_index() -> str:
 # ─── Memory Header (lightweight scan) ──────────────────────
 
 class MemoryHeader:
+    """轻量 memory 摘要，只包含召回筛选需要的元信息。"""
+
     __slots__ = ("filename", "file_path", "mtime_ms", "description", "type")
 
     def __init__(self, filename: str, file_path: str, mtime_ms: float,
@@ -146,18 +166,13 @@ class MemoryHeader:
         self.type = type
 
 
-MAX_MEMORY_FILES = 200
-MAX_MEMORY_BYTES_PER_FILE = 4096
-MAX_SESSION_MEMORY_BYTES = 60 * 1024  # 60KB cumulative per session
+MAX_MEMORY_FILES = 200                    # 参与召回筛选的最多 memory 文件数。
+MAX_MEMORY_BYTES_PER_FILE = 4096          # 单个 memory 注入前的最大字节数。
+MAX_SESSION_MEMORY_BYTES = 60 * 1024      # 单个会话最多注入的 memory 总量。
 
 
-
-"""
-快速扫描记忆目录中的所有 Markdown 文件
-只提取每个文件的头部元信息（Frontmatter）
-并返回按修改时间排序的摘要列表。
-"""
 def scan_memory_headers() -> list[MemoryHeader]:
+    """快速扫描 memory 文件头，不读取完整正文，用于低成本召回筛选。"""
     d = get_memory_dir()
     headers: list[MemoryHeader] = []
     for f in d.glob("*.md"):
@@ -166,6 +181,7 @@ def scan_memory_headers() -> list[MemoryHeader]:
         try:
             stat = f.stat()
             raw = f.read_text()
+            # 只解析前 30 行，通常 frontmatter 足够在文件开头完成。
             first30 = "\n".join(raw.split("\n")[:30])
             result = parse_frontmatter(first30)
             meta = result.meta
@@ -184,6 +200,7 @@ def scan_memory_headers() -> list[MemoryHeader]:
 
 
 def format_memory_manifest(headers: list[MemoryHeader]) -> str:
+    """把 memory 摘要列表格式化成给 side query 阅读的 manifest。"""
     lines = []
     for h in headers:
         tag = f"[{h.type}] " if h.type else ""
@@ -198,6 +215,7 @@ def format_memory_manifest(headers: list[MemoryHeader]) -> str:
 # ─── Memory Age / Freshness ────────────────────────────────
 
 def memory_age(mtime_ms: float) -> str:
+    """把修改时间转换成适合展示的相对时间。"""
     days = max(0, int((time.time() * 1000 - mtime_ms) / 86_400_000))
     if days == 0:
         return "today"
@@ -207,6 +225,7 @@ def memory_age(mtime_ms: float) -> str:
 
 
 def memory_freshness_warning(mtime_ms: float) -> str:
+    """旧记忆可能过期，注入时提醒模型先核对当前代码。"""
     days = max(0, int((time.time() * 1000 - mtime_ms) / 86_400_000))
     if days <= 1:
         return ""
@@ -224,6 +243,8 @@ Return a JSON object with a "selected_memories" array of filenames for the memor
 
 
 class RelevantMemory:
+    """被召回并准备注入对话的完整 memory。"""
+
     __slots__ = ("path", "content", "mtime_ms", "header")
 
     def __init__(self, path: str, content: str, mtime_ms: float, header: str):
@@ -232,106 +253,101 @@ class RelevantMemory:
         self.mtime_ms = mtime_ms
         self.header = header
 
+    @property
+    def size(self) -> int:
+        """当前 memory 内容占用的字节数，供 Agent 统计本会话注入预算。"""
+        return len(self.content.encode())
 
-"""
-already_surfaced 是已经给用户/模型看过的 memory 路径集合，避免重复召回。
 
-函数会扫描 memory 文件，过滤掉已经用过的，然后让一个辅助模型从候选 memory 
-里挑选和当前 query 相关的文件，读取这些文件内容，包装成 RelevantMemory 返回。
-
-"""
 async def select_relevant_memories(
     query: str,
     side_query: SideQueryFn,
     already_surfaced: set[str],
 ) -> list[RelevantMemory]:
+    """
+    从 memory 目录中选择和当前 query 最相关的记忆。
 
-    #扫描所有 memory 文件头信息
+    流程：
+    1. 扫描 memory 头信息，避免一开始就读取所有正文。
+    2. 排除本 session 已经注入过的 memory，避免重复污染上下文。
+    3. 把候选摘要交给 side query，让模型选择最多 5 个文件名。
+    4. 读取被选中的 memory 正文，截断过大的文件。
+    5. 包装成 RelevantMemory，交给后续注入逻辑。
+    """
+
+    # 扫描所有 memory 文件头信息。
     headers = scan_memory_headers()
 
     if not headers:
         return []
 
-    #排除已经展示过的 memory：
+    # 排除已经展示过的 memory。
     candidates = [h for h in headers if h.file_path not in already_surfaced]
     if not candidates:
         return []
 
-    #把候选 memory 格式化成 manifest
-    # manifest 通常是给 LLM 看的摘要列表，比如文件名、标题、更新时间等。
-
+    # manifest 是给 side query 看的候选摘要列表。
     manifest = format_memory_manifest(candidates)
 
-    #调用 side_query，让另一个模型判断哪些 memory 相关：
+    # 调用 side_query，让模型根据文件名和描述挑选相关 memory。
     try:
         text = await side_query(
             SELECT_MEMORIES_PROMPT,
             f"Query: {query}\n\nAvailable memories:\n{manifest}",
         )
 
-        # Extract JSON from response
+        # side query 可能返回解释文本，这里只提取其中的 JSON 对象。
         match = re.search(r"\{[\s\S]*\}", text)
         if not match:
             return []
 
-        #解析 JSON，拿到被选中的 memory 文件名：
-
+        # 解析 JSON，拿到被选中的 memory 文件名。
         parsed = json.loads(match.group(0))
         selected_filenames = set(parsed.get("selected_memories", []))
-        #根据文件名筛选候选 memory，最多取 5 个：
+        # 根据文件名筛选候选 memory，最多取 5 个。
         selected = [h for h in candidates if h.filename in selected_filenames][:5]
 
         result: list[RelevantMemory] = []
         for h in selected:
-            #读取每个选中的 memory 文件内容：
+            # 读取每个选中的 memory 文件内容。
             content = Path(h.file_path).read_text()
-            #如果文件太大，就截断：
+            # 如果文件太大，就截断，避免单条记忆占用过多上下文。
             if len(content.encode()) > MAX_MEMORY_BYTES_PER_FILE:
                 content = content[:MAX_MEMORY_BYTES_PER_FILE] + "\n\n[... truncated, memory file too large ...]"
 
-            #根据 memory 修改时间生成提示头：
+            # 根据 memory 修改时间生成提示头；旧记忆会附带 freshness warning。
             freshness = memory_freshness_warning(h.mtime_ms)
             header_text = (
                 f"{freshness}\n\nMemory: {h.file_path}:" if freshness
                 else f"Memory (saved {memory_age(h.mtime_ms)}): {h.file_path}:"
             )
-            #返回 RelevantMemory 列表：
+            # 返回 RelevantMemory 列表，后续会被格式化成 <system-reminder>。
             result.append(RelevantMemory(
                 path=h.file_path, content=content,
                 mtime_ms=h.mtime_ms, header=header_text,
             ))
         return result
     except Exception as e:
+        # 召回失败不应该影响主对话；取消类错误直接静默。
         if "cancel" in str(e).lower():
             return []
         print(f"[memory] semantic recall failed: {e}")
         return []
 
 
-# 预取句柄类 MemoryPrefetch，用于封装一个异步任务并提供状态跟踪
 class MemoryPrefetch:
+    """封装 memory 召回异步任务，供 Agent 主循环轮询。"""
+
     def __init__(self, task: asyncio.Task):
         self.task = task
+        # consumed 表示结果是否已经注入过，避免同一个任务结果重复使用。
         self.consumed = False
 
     @property
     def settled(self) -> bool:
+        """任务是否已经完成。"""
         return self.task.done()
 
-
-"""
-在合适的条件下，提前异步启动 memory 召回任务。
-它不会马上返回 memory 内容，而是返回一个 MemoryPrefetch 句柄
-后面可以用这个句柄检查任务是否完成、取结果。
-
-
-函数参数：
-query: 当前用户输入的问题。
-side_query: 用来做辅助查询的异步函数，通常是调用模型判断哪些 memory 相关。
-already_surfaced: 已经展示过的 memory 路径集合，避免重复召回。
-session_memory_bytes: 当前 session 已经使用的 memory 字节数。
-返回值：可能是 MemoryPrefetch，也可能是 None。
-"""
 
 def start_memory_prefetch(
     query: str,
@@ -339,11 +355,14 @@ def start_memory_prefetch(
     already_surfaced: set[str],
     session_memory_bytes: int,
 ) -> MemoryPrefetch | None:
+    """
+    在主模型回复前，提前异步启动 memory 召回。
 
+    返回值不是 memory 内容，而是 MemoryPrefetch 句柄。
+    Agent 主循环后续会检查任务是否完成，完成后再把 memory 注入当前消息。
+    """
 
-    #只有多词输入才触发 memory 预取。
-    # 它检查 query.strip() 里有没有空白字符，比如空格、换行、tab。
-
+    # 只有多词输入才触发 memory 预取，避免每个短命令都消耗一次 side query。
     if not re.search(r"\s", query.strip()):
         return None
 
@@ -357,7 +376,7 @@ def start_memory_prefetch(
     if not has_memories:
         return None
 
-    #如果前面三个条件都通过，就创建一个异步任务。
+    # 条件通过后创建异步任务，让召回和主模型请求并行推进。
     task = asyncio.create_task(
         select_relevant_memories(query, side_query, already_surfaced)
     )
@@ -365,19 +384,24 @@ def start_memory_prefetch(
 
 
 def format_memories_for_injection(memories: list[RelevantMemory]) -> str:
-    """格式化召回的记忆，以便作为用户消息内容注入."""
+    """把召回的 memory 包成 system-reminder，便于注入到用户消息。"""
     parts = []
     for m in memories:
         parts.append(f"<system-reminder>\n{m.header}\n\n{m.content}\n</system-reminder>")
     return "\n\n".join(parts)
 
 
-# ─── System prompt 生成一段结构化的系统提示文本
-# 用于指导大语言模型如何与持久化的文件型记忆系统进行交互（保存、召回、类型划分等）
-# 它会动态加载当前已有的记忆索引，并将所有规则和示例嵌入返回的字符串中。 ──────────────────────────────────
-
-
 def build_memory_prompt_section() -> str:
+    """
+    生成注入 system prompt 的 Memory System 说明。
+
+    这段说明告诉模型：
+    - memory 文件存放在哪里；
+    - 有哪些 memory 类型；
+    - 如何通过 write_file 保存 memory；
+    - 哪些内容不应该保存；
+    - 当前 MEMORY.md 索引里有哪些记忆。
+    """
     index = load_memory_index()
     memory_dir = str(get_memory_dir())
 
