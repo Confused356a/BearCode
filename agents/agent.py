@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import uuid
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Awaitable, Any
+
+import anthropic
+import openai
 
 from agents.mcp_client import McpManager
 from agents.memory import MemoryPrefetch, start_memory_prefetch, format_memories_for_injection
@@ -16,10 +18,6 @@ from agents.session import save_session
 from agents.subagent import get_sub_agent_config
 from agents.tools import ToolDef, tool_definitions, execute_tool, CONCURRENCY_SAFE_TOOLS, check_permission, \
     get_active_tool_definitions
-
-import openai
-import anthropic
-
 from agents.ui import print_info, print_divider, print_assistant_text, print_sub_agent_start, print_sub_agent_end, \
     start_spinner, stop_spinner, print_cost, print_tool_call, print_tool_result, print_confirmation, print_retry
 
@@ -376,7 +374,7 @@ class Agent:
 
 
 
-   #子agent的主入口
+   #执行一次对话，收集本轮模型输出文本，并返回本轮消耗的 token 数
     async def run_once(self, prompt:str)->None:
         self._output_buffer = []
         prev_in = self.total_input_tokens
@@ -392,7 +390,8 @@ class Agent:
             },
         }
 
-    #输出工具
+    #输出工具：统一处理模型输出文本。根据当前是否处于“收集输出”的模式
+    # 决定是把文本存进缓冲区，还是直接打印到终端。
     def _emit_text(self, text:str)->None:
         text = _safe_utf8_text(text)
         if self._output_buffer is not None:
@@ -400,7 +399,6 @@ class Agent:
         else:
             print_assistant_text(text)
 
-    #REPL命令
 
     def clear_history(self)->None:
         self._anthropic_messages = []
@@ -435,7 +433,7 @@ class Agent:
     async def compact(self)->None:
         await self._compact_conversation()
 
-    # 会话
+
     #恢复会话信息
     def restore_session(self, data:dict)->None:
         if data.get("anthropicMessages"):
@@ -444,6 +442,9 @@ class Agent:
             self._openai_messages = _sanitize_for_utf8(data["openaiMessages"])
         print_info(f"Session restored ({self._get_message_count()} messages).")
 
+
+
+#整理 Anthropic 的历史消息，修正部分角色错误，并丢弃不合法的工具调用消息。
     def _normalize_anthropic_messages(self, messages: list[dict]) -> list[dict]:
         role_normalized = []
         for msg in messages:
@@ -640,9 +641,10 @@ class Agent:
             for bindex, block in enumerate(msg["content"]):
                 if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("content"), str) and block["content"] != SNIP_PLACEHOLDER:
                     tool_use_id = block.get("tool_use_id")
+                    # 对每个 tool_result，通过 tool_use_id 反查它来自哪个工具
                     tool_info = self._find_tool_use_by_id(tool_use_id)
                     if tool_info and tool_info["name"] in SNIPPABLE_TOOLS:
-                        results.append({"mIndex": mindex, "bindex": bindex, "name": tool_info["name"], "file_path": tool_info.get("input", {}).get("file_path")})
+                        results.append({"mindex": mindex, "bindex": bindex, "name": tool_info["name"], "file_path": tool_info.get("input", {}).get("file_path")})
 
         if len(results) <= KEEP_RECENT_RESULTS:
             return
@@ -764,14 +766,15 @@ class Agent:
             return await self._mcp_manager.call_tool(name, inp)
         return await execute_tool(name, inp, self._read_file_state)
 
-    #
+
     async def _execute_skill_tool(self, inp: dict) -> str:
-        from .skills import execute_skill
+        from skills import execute_skill
         result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
 
         if not result:
             return f"Unknown skill: {inp.get('skill_name', '')}"
 
+        #fork 表示这个 skill 不直接把 prompt 塞回当前对话，而是要启动一个子 Agent 单独完成任务。
         if result["context"] == "fork":
             # result["allowed_tools"] - 直接访问
             tools = (
@@ -1129,7 +1132,7 @@ class Agent:
                 "tools": _sanitize_for_utf8(get_active_tool_definitions(self.tools)),
                 "messages": _sanitize_for_utf8(self._anthropic_messages),
             }
-
+            #如果开启了思考模式，就给 Anthropic 请求加上 thinking 参数。
             if self._thinking_mode  in ("adaptive", "enabled"):
                 create_params["thinking"]={"type": "enabled", "budget_tokens": max_output - 1}
 
@@ -1141,34 +1144,43 @@ class Agent:
                 async for event in stream:
                     if not hasattr(event, 'type'):
                         continue
-
+                    # 当事件是工具调用开始：
                     if event.type == "content_block_start":
                         cb = getattr(event, 'content_block', None)
+                        #如果 block 类型是 tool_use，就记录这个工具调用：
                         if cb and getattr(cb, 'type', None) == "tool_use":
+                            #因为工具参数 JSON 是流式分片返回的，所以先准备一个空字符串 input_json。
                             tool_blocks_by_index[event.index]= {
                                 "id": cb.id, "name": cb.name, "input_json": "",
                             }
-
+                    #当事件是内容增量，分三种情况。
                     elif event.type == "content_block_delta":
                         delta = event.delta
+                        # 第一种，普通文本：模型输出正文时，
+                        # 调用 _emit_text()。如果是普通交互，就打印；
+                        # 如果是 run_once()，就写入 _output_buffer。
                         if hasattr(delta, "text"):
                             if first_text:
                                 stop_spinner()
                                 self._emit_text("\n")
                                 first_text = False
                             self._emit_text(delta.text)
-
+                        #第二种，thinking 内容：
+                        #如果模型返回思考内容，也输出出来，并在开头加：[thinking]
                         elif hasattr(delta, 'thinking'):
                             if first_text:
                                 stop_spinner()
                                 self._emit_text("\n  [thinking] ")
                                 first_text = False
                             self._emit_text(delta.thinking)
+                        #第三种，工具参数 JSON 片段：工具调用的参数不是一次性返回，
+                        # 而是一段一段返回，所以这里不断拼接到 input_json。
                         elif hasattr(delta, 'partial_json'):
                             tb = tool_blocks_by_index.get(event.index)
                             if tb:
                                 tb["input_json"] += _safe_utf8_text(delta.partial_json)
-
+                    #当一个 content block 结束：
+                    #如果结束的是之前记录的工具调用，就把拼好的 JSON 解析出来：
                     elif event.type == "content_block_stop":
                         tb = tool_blocks_by_index.pop(event.index, None)
                         if tb and on_tool_block_complete:
@@ -1177,16 +1189,19 @@ class Agent:
                                 parsed = _json.loads(tb["input_json"] or "{}")
                             except Exception:
                                 parsed = {}
+                            #然后调用回调：
+                            #这个回调的作用通常是：工具调用一完整，
+                            # 就可以提前开始执行工具，不必等整条 assistant 消息全部结束。
                             on_tool_block_complete({
                                 "type": "tool_use", "id": _safe_utf8_text(tb["id"]),
                                 "name": _safe_utf8_text(tb["name"]), "input": _sanitize_for_utf8(parsed),
                             })
                 final_message = await stream.get_final_message()
 
-            #过滤思考的message
+            #过滤思考的message（因为 thinking 内容一般不应该进入历史消息，否则后续上下文会变大，也可能不符合 API 消息格式要求。）
             final_message.content = [b for b in final_message.content if b.type != "thinking"]
             return final_message
-
+#调用 _do()，如果遇到可重试错误，就由 _with_retry() 负责重试。
         return await _with_retry(_do)
 
     #openAI后端
