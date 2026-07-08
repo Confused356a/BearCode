@@ -12,10 +12,29 @@ from urllib.parse import urlparse
 from dotenv import find_dotenv, load_dotenv
 
 from .agent import Agent
-from .ui import print_welcome, print_user_prompt, print_error, print_info, print_plan_for_approval, print_plan_approval_options
+from .ui import (
+    print_welcome,
+    print_user_prompt,
+    print_error,
+    print_info,
+    print_plan_for_approval,
+    print_plan_approval_options,
+    print_goodbye,
+    print_interrupted,
+    print_memory_entries,
+    print_skill_entries,
+    print_warning,
+)
 from .session import load_session, get_latest_session_id
 from .memory import list_memories
-from .skills import discover_skills, resolve_skill_prompt, get_skill_by_name, execute_skill
+from .skills import (
+    discover_skills,
+    evolve_skill,
+    execute_skill,
+    get_skill_by_name,
+    record_feedback,
+    skill_stats,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -135,7 +154,7 @@ async def run_repl(agent: Agent) -> None:
                     feedback = ""
                 return {"choice": "keep-planning", "feedback": feedback or None}
             else:
-                print("  Invalid choice. Enter 1, 2, 3, or 4.")
+                print_warning("Invalid choice. Enter 1, 2, 3, or 4.")
 
     agent.set_plan_approval_fn(plan_approval_fn)
 
@@ -146,15 +165,15 @@ async def run_repl(agent: Agent) -> None:
         if agent._aborted is False and agent._output_buffer is not None:
             # Agent is processing
             agent.abort()
-            print("\n  (interrupted)")
+            print_interrupted()
             sigint_count = 0
             print_user_prompt()
         else:
             sigint_count += 1
             if sigint_count >= 2:
-                print("\nBye!\n")
+                print_goodbye()
                 sys.exit(0)
-            print("\n  Press Ctrl+C again to exit.")
+            print_warning("Press Ctrl+C again to exit.")
             print_user_prompt()
 
     signal.signal(signal.SIGINT, handle_sigint)
@@ -165,7 +184,7 @@ async def run_repl(agent: Agent) -> None:
         try:
             line = input()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye!\n")
+            print_goodbye()
             break
 
         inp = line.strip()
@@ -174,7 +193,7 @@ async def run_repl(agent: Agent) -> None:
         if not inp:
             continue
         if inp in ("exit", "quit"):
-            print("\nBye!\n")
+            print_goodbye()
             break
 
         # REPL commands
@@ -198,19 +217,39 @@ async def run_repl(agent: Agent) -> None:
             if not memories:
                 print_info("No memories saved yet.")
             else:
-                print_info(f"{len(memories)} memories:")
-                for m in memories:
-                    print(f"    [{m.type}] {m.name} — {m.description}")
+                print_memory_entries(memories)
             continue
         if inp == "/skills":
             skills = discover_skills()
             if not skills:
                 print_info("No skills found. Add skills to .bear/skills/<name>/SKILL.md")
             else:
-                print_info(f"{len(skills)} skills:")
-                for s in skills:
-                    tag = f"/{s.name}" if s.user_invocable else s.name
-                    print(f"    {tag} ({s.source}) — {s.description}")
+                print_skill_entries(skills)
+            continue
+        if inp == "/skill-stats":
+            print_info(skill_stats())
+            continue
+        if inp.startswith("/skill-feedback "):
+            _, rest = inp.split(" ", 1)
+            parts = rest.strip().split(" ", 2)
+            if len(parts) < 2:
+                print_error("Usage: /skill-feedback <skill-name> <rating> [note]")
+                continue
+            note = parts[2] if len(parts) > 2 else ""
+            record_feedback(parts[0], parts[1], note)
+            print_info(f"Recorded feedback for skill: {parts[0]}")
+            continue
+        if inp.startswith("/skill-evolve "):
+            _, rest = inp.split(" ", 1)
+            parts = rest.strip().split(" ", 1)
+            if len(parts) < 2:
+                print_error("Usage: /skill-evolve <skill-name> <durable lesson>")
+                continue
+            result = evolve_skill(parts[0], parts[1], rationale="Manual REPL evolution", target="active")
+            if result.get("ok"):
+                print_info(f"Evolved skill {result.get('skill')} to version {result.get('version')}")
+            else:
+                print_error(str(result.get("error") or result))
             continue
 
         # Skill invocation: /<skill-name> [args]
@@ -223,12 +262,13 @@ async def run_repl(agent: Agent) -> None:
                 print_info(f"Invoking skill: {skill.name}")
                 try:
                     if skill.context == "fork":
-                        result = execute_skill(skill.name, cmd_args)
-                        if result:
-                            await agent.chat(f'Use the skill tool to invoke "{skill.name}" with args: {cmd_args or "(none)"}')
+                        await agent.chat(f'Use the skill tool to invoke "{skill.name}" with args: {cmd_args or "(none)"}')
                     else:
-                        resolved = resolve_skill_prompt(skill, cmd_args)
-                        await agent.chat(resolved)
+                        result = execute_skill(skill.name, cmd_args)
+                        if not result:
+                            print_error(f"Unknown skill: {skill.name}")
+                            continue
+                        await agent.chat(result["prompt"])
                 except Exception as e:
                     if "abort" not in str(e).lower():
                         print_error(str(e))
@@ -273,6 +313,9 @@ REPL commands:
   /compact            Manually compact conversation
   /memory             List saved memories
   /skills             List available skills
+  /skill-stats        Show skill usage and evolution stats
+  /skill-feedback     Record feedback: /skill-feedback <skill> <rating> [note]
+  /skill-evolve       Evolve a skill: /skill-evolve <skill> <durable lesson>
   /<skill-name>       Invoke a skill (e.g. /commit "fix types")
 
 Examples:

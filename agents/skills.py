@@ -5,6 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .frontmatter import parse_frontmatter
+from .skill_evolution import (
+    evolve_skill_file,
+    format_skill_stats,
+    record_skill_feedback,
+    record_skill_invocation,
+)
 
 
 @dataclass
@@ -25,25 +31,34 @@ class SkillDefinition:
 _cached_skills: list[SkillDefinition] | None = None
 
 
-def execute_skill(skill_name:str, args:dict)-> dict | None:
+def execute_skill(skill_name:str, args:object)-> dict | None:
     # skill 工具的执行入口：按名字找到 skill，并返回解析后的 prompt 和执行配置。
     skill = get_skill_by_name(skill_name)
     if not skill:
         return None
 
+    record_skill_invocation(
+        skill_name=skill.name,
+        source=skill.source,
+        context=skill.context,
+        args=args,
+    )
+
     return {
         "prompt": resolve_skill_prompt(skill, args),
         "allowed_tools": skill.allowed_tools,
         "context": skill.context,
+        "source": skill.source,
+        "skill_dir": skill.skill_dir,
     }
 
 
 
-def resolve_skill_prompt(skill: SkillDefinition, args: str) -> str:
+def resolve_skill_prompt(skill: SkillDefinition, args: object) -> str:
     import re
     prompt = skill.prompt_template
     # 支持在 SKILL.md 正文中使用 $ARGUMENTS 或 ${ARGUMENTS} 引用用户参数。
-    prompt = re.sub(r"\$ARGUMENTS|\$\{ARGUMENTS\}", args, prompt)
+    prompt = re.sub(r"\$ARGUMENTS|\$\{ARGUMENTS\}", str(args or ""), prompt)
     # 支持 skill 引用自己的目录，例如读取同目录下的 references/scripts。
     prompt = prompt.replace("${CLAUDE_SKILL_DIR}", skill.skill_dir)
     return prompt
@@ -159,6 +174,11 @@ def build_skill_descriptions() -> str:
         lines.append("")
 
     lines.append("To invoke a skill programmatically, use the `skill` tool with the skill name and optional arguments.")
+    lines.append("")
+    lines.append("# Skill Evolution")
+    lines.append("Bear Code tracks skill invocations and can evolve skill prompts when durable feedback appears.")
+    lines.append("Call `skill_evolve` only when the user gives explicit reusable feedback, a stable correction, or a persistent workflow preference that should affect future similar tasks.")
+    lines.append("Do not evolve skills from one-off task content, private secrets, temporary project facts, or assistant-only guesses.")
     return "\n".join(lines)
 
 
@@ -167,6 +187,32 @@ def reset_skill_cache() -> None:
     global _cached_skills
     _cached_skills = None
 
+
+def evolve_skill(
+    skill_name: str,
+    lesson: str,
+    rationale: str = "",
+    target: str = "active",
+) -> dict:
+    skill = get_skill_by_name(skill_name)
+    result = evolve_skill_file(
+        skill_name=skill_name,
+        lesson=lesson,
+        rationale=rationale,
+        target=target,
+        active_dir=skill.skill_dir if skill else "",
+    )
+    if result.get("ok"):
+        reset_skill_cache()
+    return result
+
+
+def record_feedback(skill_name: str, rating: str, note: str = "") -> None:
+    record_skill_feedback(skill_name=skill_name, rating=rating, note=note)
+
+
+def skill_stats() -> str:
+    return format_skill_stats()
 
 
 

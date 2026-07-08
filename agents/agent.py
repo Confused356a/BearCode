@@ -19,7 +19,8 @@ from agents.subagent import get_sub_agent_config
 from agents.tools import ToolDef, tool_definitions, execute_tool, CONCURRENCY_SAFE_TOOLS, check_permission, \
     get_active_tool_definitions
 from agents.ui import print_info, print_divider, print_assistant_text, print_sub_agent_start, print_sub_agent_end, \
-    start_spinner, stop_spinner, print_cost, print_tool_call, print_tool_result, print_confirmation, print_retry
+    start_spinner, stop_spinner, print_cost, print_tool_call, print_tool_result, print_confirmation, print_retry, \
+    print_error
 
 
 # 指数退避重试
@@ -356,7 +357,7 @@ class Agent:
                 if mcp_defs:
                     self.tools = self.tools + mcp_defs
             except Exception as e:
-                print(f"[mcp] Init failed: {e}", flush=True)
+                print_error(f"MCP init failed: {e}")
 
         self._aborted = False
         coro = self._chat_openai(user_message) if self.use_openai else self._chat_anthropic(user_message)
@@ -768,7 +769,7 @@ class Agent:
 
 
     async def _execute_skill_tool(self, inp: dict) -> str:
-        from skills import execute_skill
+        from .skills import execute_skill
         result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
 
         if not result:

@@ -1,0 +1,386 @@
+- generic [active] [ref=f6e1]:
+  - generic [ref=f6e3]:
+    - link [ref=f6e4] [cursor=pointer]:
+      - /url: index.htm
+      - img [ref=f6e5]
+    - generic [ref=f6e6]:
+      - button "Submit" [ref=f6e8] [cursor=pointer]
+      - textbox "请输入关键字进行搜索" [ref=f6e9]
+  - list [ref=f6e12]:
+    - listitem [ref=f6e13]:
+      - link "首页" [ref=f6e14] [cursor=pointer]:
+        - /url: index.htm
+    - listitem [ref=f6e15]:
+      - link "学院概况" [ref=f6e16] [cursor=pointer]:
+        - /url: xygk.htm
+    - listitem [ref=f6e17]:
+      - link "科学研究" [ref=f6e18] [cursor=pointer]:
+        - /url: kxyj1.htm
+    - listitem [ref=f6e19]:
+      - link "本科教学" [ref=f6e20] [cursor=pointer]:
+        - /url: bkjx1.htm
+    - listitem [ref=f6e21]:
+      - link "研究生培养" [ref=f6e22] [cursor=pointer]:
+        - /url: yjspy.htm
+    - listitem [ref=f6e23]:
+      - link "人才培养" [ref=f6e24] [cursor=pointer]:
+        - /url: rcpy.htm
+    - listitem [ref=f6e25]:
+      - link "党建工作" [ref=f6e26] [cursor=pointer]:
+        - /url: djgz.htm
+    - listitem [ref=f6e27]:
+      - link "通知公告" [ref=f6e28] [cursor=pointer]:
+        - /url: tzgg.htm
+    - listitem [ref=f6e29]:
+      - link "就业招聘" [ref=f6e30] [cursor=pointer]:
+        - /url: jyzp.htm
+    - listitem [ref=f6e31]:
+      - link "下载专区" [ref=f6e32] [cursor=pointer]:
+        - /url: xzzq.htm
+    - listitem [ref=f6e33]:
+      - link "English" [ref=f6e34] [cursor=pointer]:
+        - /url: http://ensai.xidian.edu.cn/
+  - generic [ref=f6e35]:
+    - generic [ref=f6e38]:
+      - list [ref=f6e40]:
+        - listitem [ref=f6e41]:
+          - img [ref=f6e42]
+      - link [ref=f6e43] [cursor=pointer]:
+        - /url: javascript:void(0)
+      - link [ref=f6e44] [cursor=pointer]:
+        - /url: javascript:void(0)
+    - generic [ref=f6e45]:
+      - generic [ref=f6e46]:
+        - generic [ref=f6e47]:
+          - heading "焦点新闻 更多 >>" [level=1] [ref=f6e48]:
+            - generic [ref=f6e49]:
+              - text: 焦点
+              - emphasis [ref=f6e50]: 新闻
+            - link "更多 >>" [ref=f6e51] [cursor=pointer]:
+              - /url: jdxw.htm
+          - list [ref=f6e52]:
+            - listitem [ref=f6e53]:
+              - link [ref=f6e54] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/mV_HyMEVQMGa4UlhpBvr6A
+                - img [ref=f6e55]
+              - generic [ref=f6e56]:
+                - link "西电人工智能领域专业连续八年获评A+" [ref=f6e57] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/mV_HyMEVQMGa4UlhpBvr6A
+                - paragraph [ref=f6e58]
+            - listitem [ref=f6e59]:
+              - link [ref=f6e60] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/PeqyNkQMmd7XjC88kipsiw
+                - img [ref=f6e61]
+              - generic [ref=f6e62]:
+                - link "西北地区“大模型时代下的学术前沿与学科建设”研..." [ref=f6e63] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/PeqyNkQMmd7XjC88kipsiw
+                - paragraph [ref=f6e64]
+            - listitem [ref=f6e65]:
+              - link [ref=f6e66] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/8VlGeOoQxxsekS-Q2UYtzQ
+                - img [ref=f6e67]
+              - generic [ref=f6e68]:
+                - link "神州数码集团与西安电子科技大学人工智能学院签署..." [ref=f6e69] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/8VlGeOoQxxsekS-Q2UYtzQ
+                - paragraph [ref=f6e70]
+            - listitem [ref=f6e71]:
+              - link [ref=f6e72] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/Yl1ygLhv9D3zGrUUVKX35g
+                - img [ref=f6e73]
+              - generic [ref=f6e74]:
+                - link "【ECCV 2026】人工智能学院三个课题组近期在三维重..." [ref=f6e75] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/Yl1ygLhv9D3zGrUUVKX35g
+                - paragraph [ref=f6e76]
+            - listitem [ref=f6e77]:
+              - link [ref=f6e78] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/8ItMYJZcUck9tvql-JzpbQ
+                - img [ref=f6e79]
+              - generic [ref=f6e80]:
+                - link "风鹏正举 弦歌而行 | 人工智能学院举行2026届毕业..." [ref=f6e81] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/8ItMYJZcUck9tvql-JzpbQ
+                - paragraph [ref=f6e82]
+            - listitem [ref=f6e83]:
+              - link [ref=f6e84] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/NYwCqPeCyDgspiEXgN-WBQ
+                - img [ref=f6e85]
+              - generic [ref=f6e86]:
+                - link "深化产教融合 共筑AI生态 ——人工智能学院举办“..." [ref=f6e87] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/NYwCqPeCyDgspiEXgN-WBQ
+                - paragraph [ref=f6e88]
+            - listitem [ref=f6e89]:
+              - link [ref=f6e90] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/K1cc6VrEXqcqOx2heKamYQ
+                - img [ref=f6e91]
+              - generic [ref=f6e92]:
+                - link "我院10篇博士学位论文获评2026年校级优秀博士学位..." [ref=f6e93] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/K1cc6VrEXqcqOx2heKamYQ
+                - paragraph [ref=f6e94]
+            - listitem [ref=f6e95]:
+              - link [ref=f6e96] [cursor=pointer]:
+                - /url: https://mp.weixin.qq.com/s/aofGaO311nokL-M67NBJzg
+                - img [ref=f6e97]
+              - generic [ref=f6e98]:
+                - link "党建引领聚合力 产教融合促发展——人工智能学院..." [ref=f6e99] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/aofGaO311nokL-M67NBJzg
+                - paragraph [ref=f6e100]
+        - generic [ref=f6e102]:
+          - list [ref=f6e104]:
+            - listitem [ref=f6e105] [cursor=pointer]: 通知公告
+            - listitem [ref=f6e106] [cursor=pointer]: 学术动态
+          - generic [ref=f6e108]:
+            - link "更多>>" [ref=f6e110] [cursor=pointer]:
+              - /url: tzgg.htm
+            - list [ref=f6e111]:
+              - listitem [ref=f6e112]:
+                - link "25 2021-04 西安电子科技大学人工智能学院教师岗位招聘公告" [ref=f6e113] [cursor=pointer]:
+                  - /url: info/1106/5911.htm
+                  - generic [ref=f6e114]:
+                    - generic [ref=f6e115]: "25"
+                    - generic [ref=f6e116]: 2021-04
+                  - generic [ref=f6e117]: 西安电子科技大学人工智能学院教师岗位招聘公告
+              - listitem [ref=f6e118]:
+                - link "02 2026-07 人工智能学院2024级本科生转专业工作安排" [ref=f6e119] [cursor=pointer]:
+                  - /url: info/1106/25582.htm
+                  - generic [ref=f6e120]:
+                    - generic [ref=f6e121]: "02"
+                    - generic [ref=f6e122]: 2026-07
+                  - generic [ref=f6e123]: 人工智能学院2024级本科生转专业工作安排
+              - listitem [ref=f6e124]:
+                - link "13 2026-06 人工智能学院关于公布2026年秋季博士研究生（补报名）拟录取名单的通知" [ref=f6e125] [cursor=pointer]:
+                  - /url: info/1106/25212.htm
+                  - generic [ref=f6e126]:
+                    - generic [ref=f6e127]: "13"
+                    - generic [ref=f6e128]: 2026-06
+                  - generic [ref=f6e129]: 人工智能学院关于公布2026年秋季博士研究生（补报名）拟录取名单的通知
+              - listitem [ref=f6e130]:
+                - link "11 2026-06 人工智能学院关于选聘应届毕业生担任校内科研助理工作的通知" [ref=f6e131] [cursor=pointer]:
+                  - /url: info/1106/25172.htm
+                  - generic [ref=f6e132]:
+                    - generic [ref=f6e133]: "11"
+                    - generic [ref=f6e134]: 2026-06
+                  - generic [ref=f6e135]: 人工智能学院关于选聘应届毕业生担任校内科研助理工作的通知
+              - listitem [ref=f6e136]:
+                - link "11 2026-06 人工智能学院关于公布2026年秋季博士研究生（补报名）复试成绩的通知" [ref=f6e137] [cursor=pointer]:
+                  - /url: info/1106/25162.htm
+                  - generic [ref=f6e138]:
+                    - generic [ref=f6e139]: "11"
+                    - generic [ref=f6e140]: 2026-06
+                  - generic [ref=f6e141]: 人工智能学院关于公布2026年秋季博士研究生（补报名）复试成绩的通知
+              - listitem [ref=f6e142]:
+                - link "02 2026-06 关于公示人工智能学院2026年秋季博士考生拟录取名单的通知" [ref=f6e143] [cursor=pointer]:
+                  - /url: info/1106/25112.htm
+                  - generic [ref=f6e144]:
+                    - generic [ref=f6e145]: "02"
+                    - generic [ref=f6e146]: 2026-06
+                  - generic [ref=f6e147]: 关于公示人工智能学院2026年秋季博士考生拟录取名单的通知
+              - listitem [ref=f6e148]:
+                - link "01 2026-06 人工智能学院关于公布2026年秋季博士研究生复试成绩的通知" [ref=f6e149] [cursor=pointer]:
+                  - /url: info/1106/25092.htm
+                  - generic [ref=f6e150]:
+                    - generic [ref=f6e151]: "01"
+                    - generic [ref=f6e152]: 2026-06
+                  - generic [ref=f6e153]: 人工智能学院关于公布2026年秋季博士研究生复试成绩的通知
+              - listitem [ref=f6e154]:
+                - link "12 2026-01 人工智能学院关于2026年各批次申请博士研究生学位相关事项的通知" [ref=f6e155] [cursor=pointer]:
+                  - /url: info/1106/13802.htm
+                  - generic [ref=f6e156]:
+                    - generic [ref=f6e157]: "12"
+                    - generic [ref=f6e158]: 2026-01
+                  - generic [ref=f6e159]: 人工智能学院关于2026年各批次申请博士研究生学位相关事项的通知
+              - listitem [ref=f6e160]:
+                - link "20 2026-05 人工智能学院2026年（秋季）博士研究生招生复试与录取工作安排" [ref=f6e161] [cursor=pointer]:
+                  - /url: info/1106/24952.htm
+                  - generic [ref=f6e162]:
+                    - generic [ref=f6e163]: "20"
+                    - generic [ref=f6e164]: 2026-05
+                  - generic [ref=f6e165]: 人工智能学院2026年（秋季）博士研究生招生复试与录取工作安排
+              - listitem [ref=f6e166]:
+                - link "21 2026-05 人工智能学院2026年（秋季）博士研究生资格审核通过名单及复试时间地点安排" [ref=f6e167] [cursor=pointer]:
+                  - /url: info/1106/24972.htm
+                  - generic [ref=f6e168]:
+                    - generic [ref=f6e169]: "21"
+                    - generic [ref=f6e170]: 2026-05
+                  - generic [ref=f6e171]: 人工智能学院2026年（秋季）博士研究生资格审核通过名单及复试时间地点安排
+      - generic [ref=f6e173]:
+        - generic [ref=f6e175]:
+          - list [ref=f6e177]:
+            - listitem [ref=f6e178] [cursor=pointer]: 本科教学
+            - listitem [ref=f6e179] [cursor=pointer]: 研究生培养
+          - generic [ref=f6e181]:
+            - link "更多>>" [ref=f6e183] [cursor=pointer]:
+              - /url: bkjx1.htm
+            - list [ref=f6e184]:
+              - listitem [ref=f6e185]:
+                - link "人工智能学院图灵人工智能科学实验班管理办法 07/01" [ref=f6e186] [cursor=pointer]:
+                  - /url: info/1004/9350.htm
+                  - text: 人工智能学院图灵人工智能科学实验班管理办法
+                  - generic [ref=f6e187]: 07/01
+              - listitem [ref=f6e188]:
+                - link "工作动态|本科教学：人工智能学院举办第五届教师... 06/19" [ref=f6e189] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/-o4tttth4fMIeGMEos4X-Q
+                  - text: 工作动态|本科教学：人工智能学院举办第五届教师...
+                  - generic [ref=f6e190]: 06/19
+              - listitem [ref=f6e191]:
+                - link "工作动态|本科教学：人工智能学院举办《模拟电子... 04/29" [ref=f6e192] [cursor=pointer]:
+                  - /url: info/1004/9277.htm
+                  - text: 工作动态|本科教学：人工智能学院举办《模拟电子...
+                  - generic [ref=f6e193]: 04/29
+              - listitem [ref=f6e194]:
+                - link "计算机类学院联合召开2024本科人才培养方案修订... 04/28" [ref=f6e195] [cursor=pointer]:
+                  - /url: info/1004/9275.htm
+                  - text: 计算机类学院联合召开2024本科人才培养方案修订...
+                  - generic [ref=f6e196]: 04/28
+              - listitem [ref=f6e197]:
+                - link "人工智能学院举办《数字信号处理》教学示范课活动 04/25" [ref=f6e198] [cursor=pointer]:
+                  - /url: info/1004/9252.htm
+                  - text: 人工智能学院举办《数字信号处理》教学示范课活动
+                  - generic [ref=f6e199]: 04/25
+              - listitem [ref=f6e200]:
+                - link "人工智能学院2023届本科毕业设计工作安排 12/06" [ref=f6e201] [cursor=pointer]:
+                  - /url: info/1004/7839.htm
+                  - text: 人工智能学院2023届本科毕业设计工作安排
+                  - generic [ref=f6e202]: 12/06
+              - listitem [ref=f6e203]:
+                - link "人工智能学院2020届（2016级）毕业设计（论文）... 12/02" [ref=f6e204] [cursor=pointer]:
+                  - /url: info/1004/4314.htm
+                  - text: 人工智能学院2020届（2016级）毕业设计（论文）...
+                  - generic [ref=f6e205]: 12/02
+        - generic [ref=f6e207]:
+          - list [ref=f6e209]:
+            - listitem [ref=f6e210] [cursor=pointer]: 科学研究
+            - listitem [ref=f6e211] [cursor=pointer]: 国际交流
+          - generic [ref=f6e213]:
+            - link "更多>>" [ref=f6e215] [cursor=pointer]:
+              - /url: kxyj1.htm
+            - list [ref=f6e216]:
+              - listitem [ref=f6e217]:
+                - link "科研协作项目公示信息20260702 07/02" [ref=f6e218] [cursor=pointer]:
+                  - /url: info/1003/25592.htm
+                  - text: 科研协作项目公示信息20260702
+                  - generic [ref=f6e219]: 07/02
+              - listitem [ref=f6e220]:
+                - link "保密宣传月丨共筑保密防线，公民人人有责 05/12" [ref=f6e221] [cursor=pointer]:
+                  - /url: info/1003/18672.htm
+                  - text: 保密宣传月丨共筑保密防线，公民人人有责
+                  - generic [ref=f6e222]: 05/12
+              - listitem [ref=f6e223]:
+                - link "保密宣传月丨共筑保密防线，公民人人有责 04/28" [ref=f6e224] [cursor=pointer]:
+                  - /url: info/1003/11112.htm
+                  - text: 保密宣传月丨共筑保密防线，公民人人有责
+                  - generic [ref=f6e225]: 04/28
+              - listitem [ref=f6e226]:
+                - link "西电与中国电科第二十九所签订战略合作协议 04/15" [ref=f6e227] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/r-245SFGKDly2YVXDlgMCw
+                  - text: 西电与中国电科第二十九所签订战略合作协议
+                  - generic [ref=f6e228]: 04/15
+              - listitem [ref=f6e229]:
+                - link "人工智能学院李雷达教授团队在CVPR NTIRE 2024的... 06/19" [ref=f6e230] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/hwRWpO4oWbhycFwwzIihgA
+                  - text: 人工智能学院李雷达教授团队在CVPR NTIRE 2024的...
+                  - generic [ref=f6e231]: 06/19
+              - listitem [ref=f6e232]:
+                - link "智能学子斩获全球计算机视觉顶级会议CVPR 2024大... 06/11" [ref=f6e233] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/L3VQenRlbjfuwkGqag3D0A
+                  - text: 智能学子斩获全球计算机视觉顶级会议CVPR 2024大...
+                  - generic [ref=f6e234]: 06/11
+              - listitem [ref=f6e235]:
+                - link "IPIU群贤助力CCIG 2024举办 分享智慧擘画领域未... 06/03" [ref=f6e236] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/bNOouqxTJqkdQ0u8pV5MNw
+                  - text: IPIU群贤助力CCIG 2024举办 分享智慧擘画领域未...
+                  - generic [ref=f6e237]: 06/03
+        - generic [ref=f6e239]:
+          - list [ref=f6e241]:
+            - listitem [ref=f6e242] [cursor=pointer]: 党建工作
+            - listitem [ref=f6e243] [cursor=pointer]: 学生工作
+          - generic [ref=f6e245]:
+            - link "更多>>" [ref=f6e247] [cursor=pointer]:
+              - /url: djgz.htm
+            - list [ref=f6e248]:
+              - listitem [ref=f6e249]:
+                - link "树立和践行正确政绩观学习教育专栏⑪|智能院党委... 07/01" [ref=f6e250] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/r41ZBqLl85ANyIoUIStuhw
+                  - text: 树立和践行正确政绩观学习教育专栏⑪|智能院党委...
+                  - generic [ref=f6e251]: 07/01
+              - listitem [ref=f6e252]:
+                - link "党建引领聚合力 产教融合促发展——人工智能学... 06/16" [ref=f6e253] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/aofGaO311nokL-M67NBJzg
+                  - text: 党建引领聚合力 产教融合促发展——人工智能学...
+                  - generic [ref=f6e254]: 06/16
+              - listitem [ref=f6e255]:
+                - link "强化师德师风建设 严守职业底线红线 ——人工智... 06/12" [ref=f6e256] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/oZFkfiaBlHhqwLeLb9qejg
+                  - text: 强化师德师风建设 严守职业底线红线 ——人工智...
+                  - generic [ref=f6e257]: 06/12
+              - listitem [ref=f6e258]:
+                - link "树立和践行正确政绩观学习教育专栏⑩|一图速览！... 05/18" [ref=f6e259] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/SkFEEXK1iclLVaup9uEicA
+                  - text: 树立和践行正确政绩观学习教育专栏⑩|一图速览！...
+                  - generic [ref=f6e260]: 05/18
+              - listitem [ref=f6e261]:
+                - link "树立和践行正确政绩观学习教育专栏⑨|习近平：树... 05/14" [ref=f6e262] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/a-D8_1xx9v5BTiIB4fsbCg
+                  - text: 树立和践行正确政绩观学习教育专栏⑨|习近平：树...
+                  - generic [ref=f6e263]: 05/14
+              - listitem [ref=f6e264]:
+                - link "树立和践行正确政绩观学习教育专栏⑧|一图解读《... 05/09" [ref=f6e265] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/CBUuIlSsrUwDc3i01RbYDg
+                  - text: 树立和践行正确政绩观学习教育专栏⑧|一图解读《...
+                  - generic [ref=f6e266]: 05/09
+              - listitem [ref=f6e267]:
+                - link "树立和践行正确政绩观学习教育专栏⑦|总书记“公... 04/29" [ref=f6e268] [cursor=pointer]:
+                  - /url: https://mp.weixin.qq.com/s/eTeyi72ZgWOQ1EFP_vMugA
+                  - text: 树立和践行正确政绩观学习教育专栏⑦|总书记“公...
+                  - generic [ref=f6e269]: 04/29
+  - generic [ref=f6e272]:
+    - generic [ref=f6e273]: 校内链接
+    - generic [ref=f6e274]:
+      - link "西安电子科技大学" [ref=f6e275] [cursor=pointer]:
+        - /url: http://www.xidian.edu.cn/
+      - link "党政办公室" [ref=f6e276] [cursor=pointer]:
+        - /url: http://dzb.xidian.edu.cn/
+      - link "组织部" [ref=f6e277] [cursor=pointer]:
+        - /url: http://zzb.xidian.edu.cn/
+      - link "教务处" [ref=f6e278] [cursor=pointer]:
+        - /url: http://jwc.xidian.edu.cn/
+      - link "研究生院" [ref=f6e279] [cursor=pointer]:
+        - /url: http://gr.xidian.edu.cn/
+      - link "科学研究院" [ref=f6e280] [cursor=pointer]:
+        - /url: "#"
+      - link "国际交流与合作处" [ref=f6e281] [cursor=pointer]:
+        - /url: http://oice.xidian.edu.cn/
+      - link "人事处" [ref=f6e282] [cursor=pointer]:
+        - /url: http://rsc.xidian.edu.cn/index.html
+      - link "就业办" [ref=f6e283] [cursor=pointer]:
+        - /url: http://job.xidian.edu.cn/index.html
+      - link "财务处" [ref=f6e284] [cursor=pointer]:
+        - /url: http://cwc.xidian.edu.cn/
+      - link "国资处" [ref=f6e285] [cursor=pointer]:
+        - /url: http://gzc.xidian.edu.cn/
+      - link "西电图书馆" [ref=f6e286] [cursor=pointer]:
+        - /url: http://lib.xidian.edu.cn/
+      - link "西电导航" [ref=f6e287] [cursor=pointer]:
+        - /url: "#"
+    - generic [ref=f6e288]: 院内链接
+    - generic [ref=f6e289]:
+      - link "智能感知与图像理解教育部重点实验室" [ref=f6e290] [cursor=pointer]:
+        - /url: https://ipiu.xidian.edu.cn/
+      - link "智能工程系" [ref=f6e291] [cursor=pointer]:
+        - /url: https://aie.xidian.edu.cn/index.html
+      - link "智能感知与计算国际联合研究中心" [ref=f6e292] [cursor=pointer]:
+        - /url: "#"
+      - link "智能感知与计算国际合作联合实验室" [ref=f6e293] [cursor=pointer]:
+        - /url: "#"
+      - link "陕西省大数据智能感知与计算2011协同创新中心" [ref=f6e294] [cursor=pointer]:
+        - /url: "#"
+      - link "陕西省智能感知与计算国际联合研究中心" [ref=f6e295] [cursor=pointer]:
+        - /url: "#"
+      - link "智能信息处理科学与技术陕西省引进国外智力示范单位" [ref=f6e296] [cursor=pointer]:
+        - /url: "#"
+      - link "西安电子科技大学人工智能研究院" [ref=f6e297] [cursor=pointer]:
+        - /url: "#"
+      - link "西安电子科技大学人工智能教育中心" [ref=f6e298] [cursor=pointer]:
+        - /url: "#"
+  - generic [ref=f6e300]:
+    - term [ref=f6e303] [cursor=pointer]: "------高校导航------"
+    - term [ref=f6e306] [cursor=pointer]: "------上级部门------"
+  - paragraph [ref=f6e308]: Copyright © 2017 西安电子科技大学-人工智能学院 版权所有 技术支持：西安聚力

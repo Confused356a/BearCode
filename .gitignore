@@ -195,6 +195,7 @@ cython_debug/
 .task_outputs/
 .tasks/
 .teams/
+.bear/skill-evolution/
 
 # Ruff stuff:
 .ruff_cache/

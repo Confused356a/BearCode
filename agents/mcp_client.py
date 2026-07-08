@@ -35,6 +35,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .ui import print_error, print_info
+
 
 # ─── 单个 MCP 连接：一个 McpConnection 对应一个 MCP Server 子进程 ──────────────────
 
@@ -250,10 +252,10 @@ class McpManager:
                 # 只有初始化和工具发现都成功，才登记为可用连接。
                 self._connections[name] = conn
                 self._tools.extend(server_tools)
-                print(f"[mcp] Connected to '{name}' — {len(server_tools)} tools", flush=True)
+                print_info(f"MCP connected: {name} ({len(server_tools)} tools)")
             except Exception as e:
                 # 单个 Server 失败不影响其他 Server。失败连接需要关闭以清理子进程。
-                print(f"[mcp] Failed to connect to '{name}': {e}", flush=True)
+                print_error(f"MCP failed to connect: {name}: {e}")
                 conn.close()
 
     def get_tool_definitions(self) -> list[dict]:

@@ -119,7 +119,7 @@ python3 -m agents.main --resume
 
 - **Agent Loop**：模型回复、工具调用、工具结果回传、继续推理的循环。
 - **文件工具**：读取、写入、编辑文件，带 mtime 防护和 diff 输出。
-- **搜索工具**：文件列表、内容搜索、Web Fetch。
+- **搜索工具**：文件列表、内容搜索。
 - **Shell 工具**：执行命令，配合权限模式和危险命令检测。
 - **流式输出**：支持 Anthropic 和 OpenAI 兼容后端的流式响应。
 - **并发工具执行**：只读工具可以提前执行和并发执行。
@@ -182,7 +182,7 @@ when-to-use: Use when the user asks to review code, code review a file or diff, 
 agents/
 ├── main.py          # CLI 入口、参数解析、REPL
 ├── agent.py         # Agent Loop、模型调用、工具执行、压缩、预算
-├── tools.py         # 内置工具、权限检查、文件读写、Shell、Web Fetch
+├── tools.py         # 内置工具、权限检查、文件读写、Shell
 ├── prompt.py        # System Prompt 构建、规则加载、上下文注入
 ├── skills.py        # Skills 发现、解析、执行
 ├── subagent.py      # 子 Agent 配置和发现

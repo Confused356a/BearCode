@@ -486,3 +486,107 @@ when-to-use: Use when the user asks to review code, code review a file or diff, 
 - 确认 system prompt 中能看到 `Auto-invocable skills`。
 - 确认模型确实有 `skill` 工具可用。
 - 如果希望强制执行，可以手动调用对应 user-invocable skill，或把用户请求写得更贴近 `when-to-use`。
+
+## 14. Skill 自进化机制
+
+Bear Code 现在参考 AutoSkill 的 usage tracking、version snapshot 和 gated update 思路，为 skill 增加了可控自进化能力。
+
+核心文件：
+
+```text
+agents/skill_evolution.py
+```
+
+### 14.1 使用记录
+
+每次通过 `skill` 工具或 REPL 调用 skill 时，会写入：
+
+```text
+.bear/skill-evolution/usage.jsonl
+```
+
+记录内容包括：
+
+- `event`: `invoke`
+- `time`: UTC 时间
+- `skill`: skill 名称
+- `source`: `user` 或 `project`
+- `context`: `inline` 或 `fork`
+- `args_preview`: 参数预览
+
+查看统计：
+
+```text
+/skill-stats
+```
+
+### 14.2 反馈记录
+
+REPL 支持手动记录 skill 反馈：
+
+```text
+/skill-feedback <skill-name> <rating> [note]
+```
+
+例如：
+
+```text
+/skill-feedback code_review bad 以后 review 要先看调用方，不要只看单文件
+```
+
+这只记录反馈，不直接修改 skill。
+
+### 14.3 演化写入
+
+当用户给出明确、可复用、未来同类任务也适用的规则时，可以把它沉淀到 skill：
+
+```text
+/skill-evolve <skill-name> <durable lesson>
+```
+
+例如：
+
+```text
+/skill-evolve code_review Review 时必须检查调用方和被调用方的 API 契约是否一致。
+```
+
+模型也可以调用工具：
+
+```text
+skill_evolve
+```
+
+但 system prompt 约束它只能在用户给出明确可复用反馈、稳定纠正或持久工作流偏好时调用。不要从一次性任务内容、隐私信息、临时项目事实或 assistant 自己猜测中演化 skill。
+
+### 14.4 版本快照
+
+每次演化写入前，都会把旧版 `SKILL.md` 保存到：
+
+```text
+.bear/skill-evolution/history/<skill>.jsonl
+```
+
+随后修改目标 `SKILL.md`：
+
+- frontmatter 中 `version` patch 位加 1。
+- 写入 `last-evolved`。
+- 写入或更新 `evolution-count`。
+- 在正文的 `## Evolution Notes` 下追加规则。
+
+### 14.5 权限边界
+
+`skill_evolve` 被视为写操作：
+
+- plan mode 中会被阻断。
+- default mode 中需要确认。
+- accept-edits / bypassPermissions 会按对应权限策略放行。
+
+默认演化目标是当前生效 skill；也可以指定：
+
+```text
+target: active | project | user
+```
+
+### 14.6 回滚方式
+
+当前没有自动回滚命令。需要回滚时，从 history JSONL 中取出对应 snapshot 的 `content` 字段，写回目标 `SKILL.md`，然后重启 Bear Code 或调用 `reset_skill_cache()`。
