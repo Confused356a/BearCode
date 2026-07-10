@@ -28,6 +28,7 @@ from .ui import (
 from .session import load_session, get_latest_session_id
 from .memory import list_memories
 from .skills import (
+    create_skill,
     discover_skills,
     evolve_skill,
     execute_skill,
@@ -229,6 +230,14 @@ async def run_repl(agent: Agent) -> None:
         if inp == "/skill-stats":
             print_info(skill_stats())
             continue
+        if inp.startswith("/extract_now"):
+            hint = inp[len("/extract_now") :].strip()
+            result = await agent.extract_now(hint)
+            if result.get("ok"):
+                print_info("Ran online skill extraction for the current pending window.")
+            else:
+                print_error(str(result.get("error") or result))
+            continue
         if inp.startswith("/skill-feedback "):
             _, rest = inp.split(" ", 1)
             parts = rest.strip().split(" ", 2)
@@ -248,6 +257,27 @@ async def run_repl(agent: Agent) -> None:
             result = evolve_skill(parts[0], parts[1], rationale="Manual REPL evolution", target="active")
             if result.get("ok"):
                 print_info(f"Evolved skill {result.get('skill')} to version {result.get('version')}")
+            else:
+                print_error(str(result.get("error") or result))
+            continue
+        if inp.startswith("/skill-create "):
+            _, rest = inp.split(" ", 1)
+            parts = [part.strip() for part in rest.split("|", 3)]
+            if len(parts) < 4 or not all(parts[:4]):
+                print_error("Usage: /skill-create <name> | <description> | <when-to-use> | <instructions>")
+                continue
+            result = create_skill(
+                name=parts[0],
+                description=parts[1],
+                when_to_use=parts[2],
+                instructions=parts[3],
+                target="project",
+                context="inline",
+                user_invocable=False,
+                evidence="Manual REPL skill creation",
+            )
+            if result.get("ok"):
+                print_info(f"Created skill {result.get('skill')} at {result.get('file')}")
             else:
                 print_error(str(result.get("error") or result))
             continue
@@ -280,6 +310,12 @@ async def run_repl(agent: Agent) -> None:
         except Exception as e:
             if "abort" not in str(e).lower():
                 print_error(str(e))
+    await agent.drain_background_skill_tasks()
+
+
+async def run_one_shot(agent: Agent, prompt: str) -> None:
+    await agent.chat(prompt)
+    await agent.drain_background_skill_tasks()
 
 
 def main() -> None:
@@ -299,7 +335,7 @@ Options:
   --accept-edits      Auto-approve file edits, still confirm dangerous shell
   --dont-ask          Auto-deny anything needing confirmation (for CI)
   --thinking          Enable extended thinking (Anthropic only)
-  --model, -m         Model to use (default: claude-opus-4-6, or MINI_CLAUDE_MODEL env)
+  --model, -m         Model to use (default: deepseek-chat, or MODEL env)
   --api-base URL      Override API base URL from CLI or .env
   --resume            Resume the last session
   --max-cost USD      Stop when estimated cost exceeds this amount
@@ -314,8 +350,10 @@ REPL commands:
   /memory             List saved memories
   /skills             List available skills
   /skill-stats        Show skill usage and evolution stats
+  /extract_now        Extract the current pending online skill window: /extract_now [hint]
   /skill-feedback     Record feedback: /skill-feedback <skill> <rating> [note]
   /skill-evolve       Evolve a skill: /skill-evolve <skill> <durable lesson>
+  /skill-create       Create a skill: /skill-create <name> | <description> | <when-to-use> | <instructions>
   /<skill-name>       Invoke a skill (e.g. /commit "fix types")
 
 Examples:
@@ -323,8 +361,8 @@ Examples:
   mini-claude --yolo "run all tests and fix failures"
   mini-claude --plan "how would you refactor this?"
   mini-claude --max-cost 0.50 --max-turns 20 "implement feature X"
-  APIKEY=sk-xxx API=https://api.deepseek.com/anthropic mini-claude --model claude-sonnet-4-6 "hello"
-  OPENAI_API_KEY=sk-xxx OPENAI_BASE_URL=https://aihubmix.com/v1 mini-claude --model gpt-4o "hello"
+  MODEL=deepseek-chat APIKEY=sk-xxx API=https://api.deepseek.com/anthropic mini-claude "hello"
+  MODEL=gpt-4o OPENAI_API_KEY=sk-xxx OPENAI_BASE_URL=https://aihubmix.com/v1 mini-claude "hello"
   mini-claude --resume
   mini-claude  # starts interactive REPL
 """)
@@ -332,8 +370,8 @@ Examples:
 
     # 将命令行布尔开关统一转换成 Agent 内部使用的权限模式。
     permission_mode = _resolve_permission_mode(args)
-    # 模型优先使用命令行参数，其次读取环境变量，最后回落到默认模型。
-    model = args.model or os.environ.get("MINI_CLAUDE_MODEL", "claude-opus-4-6")
+    # 模型优先使用命令行参数，其次读取 .env 中的 MODEL，最后回落到默认模型。
+    model = args.model or os.environ.get("MODEL") or "deepseek-chat"
     resolved_api_base, resolved_api_key, resolved_use_openai = _resolve_api_config(args.api_base)
 
     # 没有可用 API key 时无法调用模型，直接提示配置方式并退出。
@@ -381,7 +419,7 @@ Examples:
         # One-shot mode
         # 一次性模式：执行完用户 prompt 后进程结束。
         try:
-            asyncio.run(agent.chat(prompt))
+            asyncio.run(run_one_shot(agent, prompt))
         except Exception as e:
             print_error(str(e))
             sys.exit(1)

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -142,6 +144,7 @@ class Agent:
         self.max_cost_usd = max_cost_usd
         self.max_turns = max_turns
         self.confirm_fn = confirm_fn
+        self._custom_system_prompt = custom_system_prompt
         self.effective_window=_get_context_windows(model) -20000
         self.session_id = uuid.uuid4().hex[:8]
         self.session_start_time= time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())
@@ -171,6 +174,7 @@ class Agent:
 
         #子agent的输出缓存
         self._output_buffer: list[str] | None=None
+        self._turn_output_buffer: list[str] | None = None
 
         # 编辑前读取
         self._read_file_state: dict[str, float] ={}
@@ -188,13 +192,17 @@ class Agent:
         #区分message的历史消息
         self._anthropic_messages: list[str] = []
         self._openai_messages: list[str] = []
+        self._last_retrieved_skill_reference: dict[str, Any] | None = None
+        self._last_retrieved_skill_hits: list[dict[str, Any]] = []
+        self._pending_skill_extraction_window: dict[str, Any] | None = None
+        self._background_skill_tasks: set[asyncio.Task] = set()
 
         #构建系统提示词
         self._base_system_prompt = custom_system_prompt or build_system_prompt()
 
         if self.permission_mode == "plan":
             self._plan_file_path = self._generate_plan_file_path()
-            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
+            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt()
         else:
             self._system_prompt = self._base_system_prompt
 
@@ -267,14 +275,14 @@ class Agent:
         return self._current_task is not None and not self._current_task.done()
 
     #大模型调用的工厂方法,构建一个用于记忆召回（memory recall）的 sideQuery 可调用对象，兼容anthropic, openai。
-    def _build_side_query(self):
+    def _build_side_query(self, *, max_tokens: int = 256):
         if self._anthropic_client:
             client = self._anthropic_client
             model = self.model
             async def _sq(system:str, user_message:str)->str:
 
                 resp = await client.messages.create(
-                    model=model, max_tokens= 256, system=system,
+                    model=model, max_tokens=max(1, int(max_tokens)), system=system,
                 messages=[{"role": "user", "content": user_message}],
                 )
                 return "".join(b.text for b in resp.content if b.type == "text")
@@ -285,6 +293,7 @@ class Agent:
             async def _sq_openai(system:str, user_message:str)->str:
                 resp = await client.chat.completions.create(
                     model=model,
+                    max_tokens=max(1, int(max_tokens)),
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": user_message},
@@ -338,7 +347,7 @@ class Agent:
             self._pre_plan_mode = self.permission_mode
             self.permission_mode = "plan"
             self._plan_file_path = self._generate_plan_file_path()
-            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt(self._plan_file_path)
+            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt()
             print_info(f"Entered plan mode. Plan file: {self._plan_file_path}")
             return "plan"
 
@@ -359,7 +368,18 @@ class Agent:
             except Exception as e:
                 print_error(f"MCP init failed: {e}")
 
+        original_user_message = _safe_utf8_text(user_message)
+        ready_skill_extraction_window: dict[str, Any] | None = None
+        self._last_retrieved_skill_reference = None
+        self._last_retrieved_skill_hits = []
+        if not self.is_sub_agent:
+            ready_skill_extraction_window = self._pop_pending_skill_extraction_window(original_user_message)
+            user_message, self._last_retrieved_skill_reference = self._augment_user_message_with_skill_context(
+                original_user_message
+            )
+
         self._aborted = False
+        self._turn_output_buffer = []
         coro = self._chat_openai(user_message) if self.use_openai else self._chat_anthropic(user_message)
         self._current_task = asyncio.create_task(coro)
         try:
@@ -369,6 +389,17 @@ class Agent:
 
         finally:
             self._current_task = None
+        assistant_text = "".join(self._turn_output_buffer or []).strip()
+        self._turn_output_buffer = None
+        if not self.is_sub_agent and not self._aborted:
+            self._schedule_background_skill_task(self._run_skill_usage_tracking(original_user_message, assistant_text))
+            if ready_skill_extraction_window:
+                self._schedule_background_skill_task(self._run_online_skill_evolution(ready_skill_extraction_window))
+            self._set_pending_skill_extraction_window(
+                original_user_message=original_user_message,
+                assistant_text=assistant_text,
+                retrieved_reference=self._last_retrieved_skill_reference,
+            )
         if not self.is_sub_agent:
             print_divider()
             self._auto_save()
@@ -395,15 +426,219 @@ class Agent:
     # 决定是把文本存进缓冲区，还是直接打印到终端。
     def _emit_text(self, text:str)->None:
         text = _safe_utf8_text(text)
+        if self._turn_output_buffer is not None:
+            self._turn_output_buffer.append(text)
         if self._output_buffer is not None:
             self._output_buffer.append(text)
         else:
             print_assistant_text(text)
 
+    def _refresh_runtime_system_prompt(self) -> None:
+        if self._custom_system_prompt is not None:
+            return
+        self._base_system_prompt = build_system_prompt()
+        if self.permission_mode == "plan":
+            self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt()
+        else:
+            self._system_prompt = self._base_system_prompt
+        if self.use_openai and self._openai_messages:
+            self._openai_messages[0]["content"] = self._system_prompt
+
+    def _augment_user_message_with_skill_context(self, user_message: str) -> tuple[str, dict[str, Any] | None]:
+        try:
+            from .skills import format_retrieved_skill_context
+
+            context, top_ref = format_retrieved_skill_context(user_message, limit=3)
+        except Exception:
+            return user_message, None
+        if top_ref and isinstance(top_ref.get("all_hits"), list):
+            self._last_retrieved_skill_hits = list(top_ref.get("all_hits") or [])
+        if not context.strip():
+            return user_message, top_ref
+        return f"{user_message}\n\n{context}", top_ref
+
+    def _strip_runtime_injections(self, text: str) -> str:
+        return re.sub(r"\n*<retrieved_skills>.*?</retrieved_skills>\s*", "", str(text or ""), flags=re.DOTALL).strip()
+
+    def _message_text(self, msg: dict[str, Any]) -> str:
+        content = msg.get("content")
+        if isinstance(content, str):
+            return self._strip_runtime_injections(content)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        parts.append(str(block.get("text") or ""))
+                    elif "content" in block and block.get("type") not in {"tool_result", "tool_use"}:
+                        parts.append(str(block.get("content") or ""))
+            return self._strip_runtime_injections("\n".join(parts))
+        return ""
+
+    def _recent_dialog_messages(self, *, max_messages: int = 8) -> list[dict[str, str]]:
+        raw_messages = self._openai_messages if self.use_openai else self._anthropic_messages
+        out: list[dict[str, str]] = []
+        for msg in raw_messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._message_text(msg)
+            if text:
+                out.append({"role": role, "content": text})
+        return out[-max(2, int(max_messages)) :]
+
+    async def _confirm_online_skill_write(self, summary: str) -> bool:
+        if self.permission_mode in {"bypassPermissions", "acceptEdits"}:
+            return True
+        if self.permission_mode in {"plan", "dontAsk"}:
+            return False
+        if self.confirm_fn is None:
+            return False
+        print_confirmation(summary)
+        try:
+            return bool(await self.confirm_fn(summary))
+        except Exception:
+            return False
+
+    async def _confirm_background_online_skill_write(self, summary: str) -> bool:
+        return self.permission_mode in {"bypassPermissions", "acceptEdits"}
+
+    def _online_evolution_enabled(self) -> bool:
+        raw = os.environ.get("BEAR_AUTO_SKILL_EVOLUTION", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    def _schedule_background_skill_task(self, coro) -> None:
+        if self.permission_mode == "plan":
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return
+        task = asyncio.create_task(coro)
+        self._background_skill_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._background_skill_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except Exception:
+                pass
+
+        task.add_done_callback(_done)
+
+    async def drain_background_skill_tasks(self) -> None:
+        tasks = [task for task in self._background_skill_tasks if not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _pop_pending_skill_extraction_window(self, next_user_feedback: str) -> dict[str, Any] | None:
+        pending = self._pending_skill_extraction_window
+        self._pending_skill_extraction_window = None
+        if not pending:
+            return None
+        messages = list(pending.get("messages") or [])
+        feedback = _safe_utf8_text(next_user_feedback).strip()
+        if feedback:
+            messages.append({"role": "user", "content": feedback})
+        pending["messages"] = messages[-10:]
+        pending["next_user_feedback"] = feedback
+        return pending
+
+    def _set_pending_skill_extraction_window(
+        self,
+        *,
+        original_user_message: str,
+        assistant_text: str,
+        retrieved_reference: dict[str, Any] | None,
+    ) -> None:
+        if not original_user_message.strip() or not assistant_text.strip():
+            return
+        self._pending_skill_extraction_window = {
+            "messages": self._recent_dialog_messages(max_messages=8),
+            "latest_user": original_user_message,
+            "latest_assistant": assistant_text,
+            "retrieved_reference": self._compact_retrieved_reference(retrieved_reference),
+            "session_id": self.session_id,
+        }
+
+    def _compact_retrieved_reference(self, ref: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not ref:
+            return None
+        return {k: v for k, v in ref.items() if k != "all_hits"}
+
+    async def _run_online_skill_evolution(self, window: dict[str, Any], *, interactive_confirm: bool = False) -> None:
+        if not self._online_evolution_enabled() or self.permission_mode == "plan":
+            return
+        messages = list(window.get("messages") or [])
+        if not messages:
+            return
+
+        side_query = self._build_side_query(max_tokens=2200)
+        if side_query is None:
+            return
+
+        try:
+            from .online_skill_evolution import online_ingest
+        except Exception:
+            return
+
+        result = await online_ingest(
+            messages=messages,
+            side_query=side_query,
+            retrieved_reference=window.get("retrieved_reference") or None,
+            hint=str(window.get("hint") or ""),
+            confirm_write=self._confirm_online_skill_write if interactive_confirm else self._confirm_background_online_skill_write,
+            target=os.environ.get("BEAR_AUTO_SKILL_TARGET", "project"),
+        )
+        if result.get("ok"):
+            if result.get("action") in {"add", "merge"}:
+                self._refresh_runtime_system_prompt()
+                print_info(f"Online skill {result.get('action')}: {result.get('skill')}")
+        elif result.get("action") not in {"add_denied", "merge_denied"}:
+            print_error(f"Online skill evolution failed: {result.get('error') or result}")
+
+    async def _run_skill_usage_tracking(self, original_user_message: str, assistant_text: str) -> None:
+        if not self._online_evolution_enabled() or self.permission_mode == "plan":
+            return
+        hits = list(self._last_retrieved_skill_hits or [])
+        if not hits or not assistant_text.strip():
+            return
+        side_query = self._build_side_query(max_tokens=700)
+        try:
+            from .online_skill_evolution import judge_retrieved_skill_usage
+            from .skills import record_usage_judgments
+
+            judgments = await judge_retrieved_skill_usage(
+                hits=hits,
+                user_message=original_user_message,
+                assistant_text=assistant_text,
+                side_query=side_query,
+            )
+            result = record_usage_judgments(judgments)
+            if result.get("pruned"):
+                self._refresh_runtime_system_prompt()
+        except Exception:
+            return
+
+    async def extract_now(self, hint: str = "") -> dict[str, Any]:
+        pending = self._pending_skill_extraction_window
+        if not pending:
+            return {"ok": False, "error": "no pending online skill extraction window"}
+        window = dict(pending)
+        window["hint"] = hint
+        await self._run_online_skill_evolution(window, interactive_confirm=True)
+        self._pending_skill_extraction_window = None
+        return {"ok": True}
+
 
     def clear_history(self)->None:
         self._anthropic_messages = []
         self._openai_messages = []
+        self._pending_skill_extraction_window = None
+        self._last_retrieved_skill_reference = None
+        self._last_retrieved_skill_hits = []
         if self.use_openai:
             self._openai_messages.append({"role": "system", "content":self._system_prompt})
         self.total_input_tokens = 0
@@ -765,7 +1000,15 @@ class Agent:
             # Route MCP tool calls to the MCP manager
         if self._mcp_manager.is_mcp_tool(name):
             return await self._mcp_manager.call_tool(name, inp)
-        return await execute_tool(name, inp, self._read_file_state)
+        result = await execute_tool(name, inp, self._read_file_state)
+        if name in {"skill_create", "skill_evolve"}:
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and parsed.get("ok"):
+                    self._refresh_runtime_system_prompt()
+            except Exception:
+                pass
+        return result
 
 
     async def _execute_skill_tool(self, inp: dict) -> str:

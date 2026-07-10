@@ -1,9 +1,0 @@
-- table [ref=f7e2]:
-  - rowgroup [ref=f7e3]:
-    - row [ref=f7e4]:
-      - cell [ref=f7e5]
-    - row "系统提示 您访问的页面未找到， 5秒后自动跳转到首页" [ref=f7e6]:
-      - cell "系统提示 您访问的页面未找到， 5秒后自动跳转到首页" [ref=f7e7]:
-        - generic [ref=f7e8]:
-          - strong [ref=f7e10]: 系统提示
-          - generic [ref=f7e12]: 您访问的页面未找到， 5秒后自动跳转到首页

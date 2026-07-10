@@ -48,6 +48,7 @@ def print_welcome() -> None:
     commands.add_column(style="dim")
     commands.add_row("/plan", "read-only planning workflow")
     commands.add_row("/skills", "list reusable skills")
+    commands.add_row("/skill-create", "create a reusable skill")
     commands.add_row("/skill-stats", "show skill evolution stats")
     commands.add_row("/memory", "list long-term memories")
     commands.add_row("/compact", "compact current context")
@@ -350,6 +351,7 @@ _TOOL_ICONS = {
     "grep_search": "🔍",
     "run_shell": "💻",
     "skill": "⚡",
+    "skill_create": "🍪",
     "skill_evolve": "🧬",
     "agent": "🤖",
 }
@@ -375,6 +377,8 @@ def _get_tool_summary(name: str, inp: dict) -> str:
         return cmd[:60] + "..." if len(cmd) > 60 else cmd
     if name == "skill":
         return inp.get("skill_name", "")
+    if name == "skill_create":
+        return inp.get("name", "")
     if name == "skill_evolve":
         return inp.get("skill_name", "")
     if name == "agent":

@@ -1,0 +1,93 @@
+- generic [active] [ref=f1e1]:
+  - link "欢迎进入 腾讯天气,盲人用户使用操作智能引导，请按快捷键Ctrl+Alt+R；阅读详细操作说明请按快捷键Ctrl+Alt+问号键。":
+    - /url: javascript:void(0)
+  - generic [ref=f1e3]:
+    - textbox [ref=f1e4]
+    - generic [ref=f1e6]:
+      - img "logo" [ref=f1e7]
+      - generic [ref=f1e8]:
+        - link "腾讯网首页" [ref=f1e9] [cursor=pointer]:
+          - /url: //www.qq.com
+        - link "无障碍浏览" [ref=f1e10] [cursor=pointer]:
+          - /url: javascript:void(0)
+        - generic [ref=f1e11]:
+          - paragraph
+        - textbox "搜索市、区、县等" [ref=f1e13]
+    - generic [ref=f1e15]:
+      - paragraph [ref=f1e16]
+      - generic [ref=f1e17]:
+        - paragraph
+        - paragraph
+        - list
+      - generic [ref=f1e18]:
+        - paragraph [ref=f1e19]
+        - paragraph [ref=f1e21]
+        - paragraph [ref=f1e23]
+    - generic [ref=f1e26]:
+      - heading "逐小时预报" [level=2] [ref=f1e27]
+      - link "数据来源于中国天气网" [ref=f1e28] [cursor=pointer]:
+        - /url: http://www.weather.com.cn/
+      - generic [ref=f1e29]:
+        - link [ref=f1e30] [cursor=pointer]:
+          - /url: javascript:;
+        - link [ref=f1e31] [cursor=pointer]:
+          - /url: javascript:;
+      - generic:
+        - list
+    - generic [ref=f1e32]:
+      - generic [ref=f1e33]:
+        - link "15日天气预报" [ref=f1e34] [cursor=pointer]:
+          - /url: http://www.weather.com.cn/weather1d/101010100.shtml
+        - heading "7日天气预报" [level=2] [ref=f1e35]
+        - generic:
+          - list
+      - generic [ref=f1e37]:
+        - generic [ref=f1e38]:
+          - link [ref=f1e39] [cursor=pointer]:
+            - /url: javascript:;
+          - link [ref=f1e40] [cursor=pointer]:
+            - /url: javascript:;
+        - heading "生活指数" [level=2] [ref=f1e41]
+        - generic [ref=f1e42]:
+          - generic:
+            - list
+            - list
+    - generic [ref=f1e43]:
+      - generic [ref=f1e44]:
+        - link [ref=f1e45] [cursor=pointer]:
+          - /url: "http://www.cma.gov.cn/ "
+        - link [ref=f1e47] [cursor=pointer]:
+          - /url: http://www.nmc.cn/
+        - link [ref=f1e49] [cursor=pointer]:
+          - /url: http://www.weather.com.cn/
+      - contentinfo [ref=f1e51]:
+        - generic [ref=f1e52]:
+          - link "关于腾讯" [ref=f1e53] [cursor=pointer]:
+            - /url: http://www.tencent.com/
+          - text: "|"
+          - link "About Tencent" [ref=f1e54] [cursor=pointer]:
+            - /url: http://www.tencent.com/index_e.shtml
+          - text: "|"
+          - link "服务协议" [ref=f1e55] [cursor=pointer]:
+            - /url: http://new.qq.com/static/contract.shtml
+          - text: "|"
+          - link "隐私政策" [ref=f1e56] [cursor=pointer]:
+            - /url: https://privacy.qq.com/mb/policy/tencent-privacypolicy
+          - text: "|"
+          - link "开放平台" [ref=f1e57] [cursor=pointer]:
+            - /url: http://open.qq.com/
+          - text: "|"
+          - link "广告服务" [ref=f1e58] [cursor=pointer]:
+            - /url: http://www.tencentmind.com/
+          - text: "|"
+          - link "腾讯招聘" [ref=f1e59] [cursor=pointer]:
+            - /url: http://hr.tencent.com/
+          - text: "|"
+          - link "腾讯公益" [ref=f1e60] [cursor=pointer]:
+            - /url: http://gongyi.qq.com/
+        - generic [ref=f1e61]: Copyright © 1998 - 2026 Tencent. All Rights Reserved
+        - generic [ref=f1e62]:
+          - link "腾讯公司" [ref=f1e63] [cursor=pointer]:
+            - /url: http://www.tencent.com/
+          - link "版权所有" [ref=f1e64] [cursor=pointer]:
+            - /url: http://www.tencent.com/zh-cn/le/copyrightstatement.shtml

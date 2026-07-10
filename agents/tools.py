@@ -17,7 +17,7 @@ ToolDef = dict  # Anthropic tool schema dict
 PermissionMode = str  # "default" | "plan" | "acceptEdits" | "bypassPermissions" | "dontAsk"
 
 READ_TOOLS = {"read_file", "list_files", "grep_search"}
-EDIT_TOOLS = {"write_file", "edit_file", "skill_evolve"}
+EDIT_TOOLS = {"write_file", "edit_file", "skill_evolve", "skill_create"}
 
 
 #并发安全的工具可以并行运行（只读，无副作用）
@@ -143,6 +143,33 @@ tool_definitions: list[ToolDef] = [
                 },
             },
             "required": ["skill_name", "lesson"],
+        },
+    },
+    {
+        "name": "skill_create",
+        "description": "Create a new reusable skill from explicit durable workflow guidance when no suitable existing skill exists.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Concise reusable skill name"},
+                "description": {"type": "string", "description": "One-sentence description of what the skill does and when to use it"},
+                "instructions": {"type": "string", "description": "Reusable SKILL.md body. Focus on durable method, constraints, and workflow, not one-off task content."},
+                "when_to_use": {"type": "string", "description": "Trigger condition for auto-invocation"},
+                "target": {
+                    "type": "string",
+                    "enum": ["project", "user"],
+                    "description": "Where to create the skill. Defaults to project.",
+                },
+                "context": {
+                    "type": "string",
+                    "enum": ["inline", "fork"],
+                    "description": "Skill execution mode. Defaults to inline.",
+                },
+                "user_invocable": {"type": "boolean", "description": "Whether users can invoke it manually with /<skill>. Defaults to false."},
+                "allowed_tools": {"type": "string", "description": "Optional comma-separated allowed tools for fork mode"},
+                "evidence": {"type": "string", "description": "Short user-provided evidence showing why this is reusable"},
+            },
+            "required": ["name", "description", "instructions"],
         },
     },
     {
@@ -621,6 +648,9 @@ def check_permission(
     elif tool_name == "skill_evolve":
         needs_confirm = True
         confirm_message = f"evolve skill: {inp.get('skill_name', '')}"
+    elif tool_name == "skill_create":
+        needs_confirm = True
+        confirm_message = f"create skill: {inp.get('name', '')}"
 
     if needs_confirm:
         if mode == "dontAsk":
@@ -690,6 +720,22 @@ async def execute_tool(
         )
         return _truncate_result(json.dumps(result, ensure_ascii=False, indent=2))
 
+    if name == "skill_create":
+        from .skills import create_skill
+
+        result = create_skill(
+            name=inp.get("name", ""),
+            description=inp.get("description", ""),
+            instructions=inp.get("instructions", ""),
+            when_to_use=inp.get("when_to_use", "") or inp.get("when-to-use", ""),
+            target=inp.get("target", "project"),
+            context=inp.get("context", "inline"),
+            user_invocable=bool(inp.get("user_invocable", False)),
+            allowed_tools=inp.get("allowed_tools"),
+            evidence=inp.get("evidence", ""),
+        )
+        return _truncate_result(json.dumps(result, ensure_ascii=False, indent=2))
+
     handlers: dict = {
         "write_file": _write_file,
         "edit_file": _edit_file,
@@ -719,7 +765,6 @@ async def execute_tool(
 def reset_permission_cache() -> None:
     global _cached_rules
     _cached_rules = None
-
 
 
 
