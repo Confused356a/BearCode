@@ -196,6 +196,22 @@ def _compile_eval_rules(skill: dict[str, Any], *, include_llm_rules: bool = Fals
         }
     ]
 
+    skill_requirement = _skill_alignment_requirement(skill)
+    if include_llm_rules and skill_requirement:
+        rules.append(
+            {
+                "rule_id": "skill_instruction_alignment",
+                "label": "Follows skill instructions",
+                "kind": "llm_binary",
+                "hard": False,
+                "params": {
+                    "mode": "requirement",
+                    "requirement_text": skill_requirement,
+                },
+                "provenance": {"source": "skill_text"},
+            }
+        )
+
     if any(key in low for key in ("引用来源", "标注来源", "注明来源", "cite sources", "with sources", "provide sources", "source-backed")):
         rules.append(
             {
@@ -295,6 +311,38 @@ def _compile_eval_rules(skill: dict[str, Any], *, include_llm_rules: bool = Fals
         )
 
     return rules[:8]
+
+
+def _skill_alignment_requirement(skill: dict[str, Any], *, max_chars: int = 3200) -> str:
+    parts: list[str] = []
+    name = str(skill.get("name") or "").strip()
+    description = str(skill.get("description") or "").strip()
+    when_to_use = str(skill.get("when_to_use") or "").strip()
+    instructions = str(skill.get("instructions") or "").strip()
+    tags = [str(tag).strip() for tag in skill.get("tags", []) if str(tag).strip()]
+
+    if name:
+        parts.append(f"Skill name: {name}")
+    if description:
+        parts.append(f"Description: {description}")
+    if when_to_use:
+        parts.append(f"When to use: {when_to_use}")
+    if tags:
+        parts.append("Tags: " + ", ".join(tags))
+    if instructions:
+        parts.append("Instructions:\n" + instructions)
+
+    body = "\n\n".join(parts).strip()
+    if not body:
+        return ""
+    if len(body) > max_chars:
+        body = body[: max_chars - 80].rstrip() + "\n\n[Truncated to fit judge context.]"
+    return (
+        "Evaluate whether the assistant response follows this Skill's observable requirements. "
+        "Judge only the response quality for the given user message; do not require hidden tool calls or information that is not visible in the response. "
+        "Return false when the response clearly violates important instructions, misses the requested style/format, or ignores the Skill's intended behavior.\n\n"
+        + body
+    )
 
 
 def _paragraph_limit(text: str) -> int:
@@ -571,53 +619,11 @@ def _summarize_rule_outcomes(rules: list[dict[str, Any]], samples: list[dict[str
             outcome = _evaluate_rule(rule, response)
             outcome["sample_id"] = sample.get("sample_id", "")
             outcome["split"] = sample.get("split", "")
+            outcome["kind"] = rule.get("kind", "programmatic")
             outcome["score"] = (2.0 if outcome.get("hard") else 1.0) if outcome.get("passed") else 0.0
             outcomes.append(outcome)
 
-    total = len(outcomes)
-    passed = sum(1 for item in outcomes if item.get("passed"))
-    total_score = float(sum(float(item.get("score", 0.0) or 0.0) for item in outcomes))
-    hard = [item for item in outcomes if item.get("hard")]
-    hard_failed = [item for item in hard if not item.get("passed")]
-    test = [item for item in outcomes if item.get("split") == "promotion_test"]
-    test_passed = sum(1 for item in test if item.get("passed"))
-    test_hard_failed = [item for item in test if item.get("hard") and not item.get("passed")]
-    by_rule: dict[str, dict[str, Any]] = {}
-    for outcome in outcomes:
-        rid = str(outcome.get("rule_id") or "unknown")
-        item = by_rule.setdefault(rid, {"rule_id": rid, "passed": 0, "total": 0, "hard": bool(outcome.get("hard"))})
-        item["total"] = int(item.get("total", 0)) + 1
-        if outcome.get("passed"):
-            item["passed"] = int(item.get("passed", 0)) + 1
-    for item in by_rule.values():
-        item["pass_rate"] = _ratio(int(item.get("passed", 0)), int(item.get("total", 0)))
-
-    return {
-        "rules": rules,
-        "rule_count": len(rules),
-        "outcome_count": total,
-        "passed_rules": passed,
-        "total_score": total_score,
-        "average_score": _ratio(total_score, max(1, len(samples))),
-        "pass_rate": _ratio(passed, total),
-        "hard_failures": len(hard_failed),
-        "promotion_test_pass_rate": _ratio(test_passed, len(test)),
-        "promotion_test_hard_failures": len(test_hard_failed),
-        "by_rule": sorted(by_rule.values(), key=lambda item: str(item.get("rule_id") or "")),
-        "failures": [
-            {
-                "sample_id": item.get("sample_id", ""),
-                "split": item.get("split", ""),
-                "rule_id": item.get("rule_id", ""),
-                "label": item.get("label", ""),
-                "hard": item.get("hard", False),
-                "details": item.get("details", {}),
-            }
-            for item in outcomes
-            if not item.get("passed")
-        ][:20],
-        "outcomes": outcomes,
-    }
+    return _summarize_outcomes_from_rows(rules=rules, samples=samples, outcomes=outcomes)
 
 
 async def _summarize_rule_outcomes_async(
@@ -654,6 +660,9 @@ def _summarize_outcomes_from_rows(
 ) -> dict[str, Any]:
     total = len(outcomes)
     passed = sum(1 for item in outcomes if item.get("passed"))
+    llm_rules = [rule for rule in rules if str(rule.get("kind") or "programmatic") == "llm_binary"]
+    llm_outcomes = [item for item in outcomes if str(item.get("kind") or "programmatic") == "llm_binary"]
+    llm_passed = sum(1 for item in llm_outcomes if item.get("passed"))
     total_score = float(sum(float(item.get("score", 0.0) or 0.0) for item in outcomes))
     hard = [item for item in outcomes if item.get("hard")]
     hard_failed = [item for item in hard if not item.get("passed")]
@@ -673,7 +682,12 @@ def _summarize_outcomes_from_rows(
     return {
         "rules": rules,
         "rule_count": len(rules),
+        "programmatic_rule_count": len(rules) - len(llm_rules),
+        "llm_rule_count": len(llm_rules),
         "outcome_count": total,
+        "llm_outcome_count": len(llm_outcomes),
+        "llm_pass_rate": _ratio(llm_passed, len(llm_outcomes)),
+        "skipped_outcome_count": sum(1 for item in outcomes if item.get("skipped")),
         "passed_rules": passed,
         "total_score": total_score,
         "average_score": _ratio(total_score, max(1, len(samples))),
@@ -903,6 +917,7 @@ def _persist_eval_artifacts(
             "split": outcome.get("split", ""),
             "rule_id": outcome.get("rule_id", ""),
             "label": outcome.get("label", ""),
+            "kind": outcome.get("kind", "programmatic"),
             "hard": bool(outcome.get("hard")),
             "passed": bool(outcome.get("passed")),
             "score": float(outcome.get("score", 0.0) or 0.0),
@@ -1126,6 +1141,9 @@ async def _evaluate_online_skill_evolution_core(
     total_replay = 0
     total_rule_outcomes = 0
     total_rule_passed = 0
+    total_llm_rules = 0
+    total_llm_rule_outcomes = 0
+    total_llm_rule_passed = 0
     for item in skills:
         status = str(item.get("status") or "unknown")
         status_counts[status] = int(status_counts.get(status, 0)) + 1
@@ -1138,6 +1156,10 @@ async def _evaluate_online_skill_evolution_core(
         total_replay += int(replay.get("count", 0) or 0)
         total_rule_outcomes += int(eval_data.get("outcome_count", 0) or 0)
         total_rule_passed += round(float(eval_data.get("pass_rate", 0.0) or 0.0) * int(eval_data.get("outcome_count", 0) or 0))
+        total_llm_rules += int(eval_data.get("llm_rule_count", 0) or 0)
+        llm_outcome_count = int(eval_data.get("llm_outcome_count", 0) or 0)
+        total_llm_rule_outcomes += llm_outcome_count
+        total_llm_rule_passed += round(float(eval_data.get("llm_pass_rate", 0.0) or 0.0) * llm_outcome_count)
 
     report = {
         "generated_at": _utc_now(),
@@ -1146,9 +1168,14 @@ async def _evaluate_online_skill_evolution_core(
         "methodology": {
             "lineage": "group online provenance and usage by skill",
             "replay": "freeze compact online conversation windows as replay samples",
-            "rules": "compile small deterministic rules from each active skill's description and instructions",
+            "rules": "compile deterministic rules and optional LLM judge rules from each active skill's description and instructions",
             "gate": "mark skills incubating, watch, healthy, pruned, or unobserved from replay, rule, and usage signals",
             "champion": "promote the current active version into a local online-eval champion only when it is healthy and beats the prior champion gate",
+        },
+        "llm_judge": {
+            "enabled": bool(side_query),
+            "rule_kind": "llm_binary",
+            "response_source": "history_latest_assistant",
         },
         "thresholds": {
             "min_replay_samples": min_replay_samples,
@@ -1172,6 +1199,9 @@ async def _evaluate_online_skill_evolution_core(
             "replay_samples": total_replay,
             "rule_outcomes": total_rule_outcomes,
             "rule_pass_rate": _ratio(total_rule_passed, total_rule_outcomes),
+            "llm_rules": total_llm_rules,
+            "llm_rule_outcomes": total_llm_rule_outcomes,
+            "llm_rule_pass_rate": _ratio(total_llm_rule_passed, total_llm_rule_outcomes),
         },
         "skills": skills,
         "recent_failures": recent_failures[-10:],
@@ -1208,7 +1238,7 @@ def evaluate_online_skill_evolution(
             write_report=write_report,
             write_artifacts=write_artifacts,
             side_query=None,
-            include_llm_rules=False,
+            include_llm_rules=True,
         )
     )
 
@@ -1250,6 +1280,8 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
     actions = aggregate.get("actions") if isinstance(aggregate.get("actions"), dict) else {}
     statuses = aggregate.get("statuses") if isinstance(aggregate.get("statuses"), dict) else {}
     champion_statuses = aggregate.get("champion_statuses") if isinstance(aggregate.get("champion_statuses"), dict) else {}
+    llm_judge = report.get("llm_judge") if isinstance(report.get("llm_judge"), dict) else {}
+    llm_enabled = bool(llm_judge.get("enabled"))
 
     lines = [
         "Online skill eval:",
@@ -1261,7 +1293,11 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
             f"candidate_events={aggregate.get('candidate_events', 0)}, "
             f"acceptance_rate={_pct(float(aggregate.get('acceptance_rate', 0) or 0))}, "
             f"replay_samples={aggregate.get('replay_samples', 0)}, "
-            f"rule_pass_rate={_pct(float(aggregate.get('rule_pass_rate', 0) or 0))}"
+            f"rule_pass_rate={_pct(float(aggregate.get('rule_pass_rate', 0) or 0))}, "
+            f"llm={'on' if llm_enabled else 'off'}, "
+            f"llm_rules={aggregate.get('llm_rules', 0)}, "
+            f"llm_judgments={aggregate.get('llm_rule_outcomes', 0)}, "
+            f"llm_pass_rate={_pct(float(aggregate.get('llm_rule_pass_rate', 0) or 0))}"
         ),
         (
             "  actions: "
@@ -1302,6 +1338,8 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
                 f"replay={replay.get('count', 0)} "
                 f"(test={replay.get('promotion_test', 0)}), "
                 f"rules={eval_data.get('rule_count', 0)}, "
+                f"llm_rules={eval_data.get('llm_rule_count', 0)}, "
+                f"llm_judgments={eval_data.get('llm_outcome_count', 0)}, "
                 f"rule_pass={_pct(float(eval_data.get('pass_rate', 0) or 0))}, "
                 f"hard_failures={eval_data.get('hard_failures', 0)}, "
                 f"retrieved={item.get('retrieved', 0)}, "

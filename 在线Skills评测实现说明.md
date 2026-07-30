@@ -1,6 +1,6 @@
 # 在线 Skills 评测实现说明
 
-本文档根据当前最新代码说明 Bear Code 的在线 Skills 评测是怎么做的。重点解释每个阶段的名词含义、代码流程、输入输出和当前边界。
+本文档说明 Bear Code 的在线 Skills 评测是怎么做的。重点解释每个阶段的名词含义、代码流程、输入输出和当前边界。
 
 核心实现文件：
 
@@ -433,7 +433,7 @@ json_parseable
 _compile_eval_rules(skill, include_llm_rules=False)
 ```
 
-输入来自 active Skill 快照：
+规则输入优先来自 active Skill 快照，也就是当前能被 `discover_skills()` 加载到的 `SKILL.md`：
 
 - `name`
 - `description`
@@ -441,7 +441,36 @@ _compile_eval_rules(skill, include_llm_rules=False)
 - `instructions`
 - `tags`
 
-这些文本会拼成一个 corpus，然后通过关键词触发规则。
+如果某个 Skill 出现在在线来源、使用统计或生命周期统计里，但当前 active Skill 里已经找不到对应 `SKILL.md`，评测不会直接丢掉它，而是构造一个降级快照：
+
+```text
+name = skill 名称
+description = lineage.description 或 lifecycle.description
+when_to_use = lineage.when_to_use
+instructions = ""
+```
+
+这样它仍然会进入报告，但因为正文 instructions 缺失，能编译出的规则会比 active Skill 少。
+
+这些文本会拼成一个 corpus，然后生成两类规则：
+
+- 程序化规则：通过关键词触发，用代码直接检查。
+- LLM judge 规则：在 `/skill-eval` 这种有模型调用能力的路径下生成，用模型判断历史回复是否符合 Skill 的整体要求。
+
+当前规则不是由 LLM 临时“发明”出来的。LLM 只负责执行 `llm_binary` 规则的判断；规则列表本身由本地代码根据 Skill 文本确定。
+
+规则生成主流程：
+
+```text
+读取 Skill 快照
+  -> 拼接 name / description / when_to_use / instructions / tags
+  -> 归一化成 corpus
+  -> 添加 baseline 默认规则
+  -> 如果 include_llm_rules=True，添加通用 LLM 对齐规则
+  -> 根据关键词添加程序化规则
+  -> 根据反幻觉关键词添加 LLM 硬规则或程序化降级规则
+  -> 最多保留前 8 条规则
+```
 
 ### 8.3 默认规则
 
@@ -455,6 +484,7 @@ _compile_eval_rules(skill, include_llm_rules=False)
 
 | rule_id | kind | hard | 触发信号 | 检查方式 |
 |---------|------|------|----------|----------|
+| `skill_instruction_alignment` | `llm_binary` | false | 有 LLM judge 且 Skill 有可读文本 | 由 LLM 判断回复是否符合该 Skill 的整体要求 |
 | `must_cite_sources` | `programmatic` | true | `引用来源`、`cite sources` 等 | 检查 URL、Markdown 链接或来源标签 |
 | `paragraph_limit` | `programmatic` | true | `不超过 N 段`、`at most N paragraph` 等 | 检查段落数量 |
 | `lead_with_conclusion` | `programmatic` | false | `先给结论`、`bottom line first` 等 | 检查首段是否像结论或足够短 |
@@ -467,6 +497,69 @@ _compile_eval_rules(skill, include_llm_rules=False)
 
 ```text
 rules[:8]
+```
+
+### 8.5 规则生成方式汇总
+
+当前一共有四种规则生成方式。
+
+第一种是 baseline 默认生成。
+
+无论 Skill 文本是什么，都会生成 `response_nonempty`。它保证评测至少能检查“历史 assistant 回复是不是空的”。这条规则不依赖关键词，也不依赖 LLM。
+
+第二种是关键词触发的程序化规则。
+
+系统会扫描 Skill 的 `name`、`description`、`when_to_use`、`instructions` 和 `tags`。如果文本里出现固定关键词，就生成对应规则：
+
+| 关键词信号 | 生成规则 | 说明 |
+|------------|----------|------|
+| `引用来源`、`标注来源`、`cite sources` 等 | `must_cite_sources` | 要求回复里有 URL、Markdown 链接或“来源/参考”标签 |
+| `不超过 N 段`、`最多 N 段`、`at most N paragraph` 等 | `paragraph_limit` | 要求回复段落数不超过限制 |
+| `先给结论`、`结论在前`、`bottom line first` 等 | `lead_with_conclusion` | 要求首段像结论，或者首段足够短 |
+| `JSON`、`结构化输出` | `json_parseable` | 要求回复能被 `json.loads()` 解析 |
+| `表格`、`markdown table` | `markdown_table` | 要求回复包含 Markdown 表格结构 |
+
+第三种是 `/skill-eval` 下的通用 LLM 对齐规则。
+
+当 REPL 命令能拿到 `side_query` 时，`include_llm_rules=True`。只要 Skill 有可读文本，就会生成：
+
+```text
+skill_instruction_alignment
+```
+
+这条规则不是从某个关键词触发，而是把整个 Skill 快照整理成 `requirement_text`，让 LLM 判断历史回复是否符合 Skill 的整体要求。
+
+第四种是反幻觉规则的分支生成。
+
+如果 Skill 文本里出现：
+
+```text
+不要幻觉 / 不要编造 / 不确定就说 / do not hallucinate / avoid hallucination / if unsure
+```
+
+会根据当前是否启用 LLM judge 走不同分支：
+
+| 当前条件 | 生成规则 | kind | hard | 含义 |
+|----------|----------|------|------|------|
+| 有 LLM judge | `no_unfounded_claims` | `llm_binary` | true | 由 LLM 判断是否避免无依据断言 |
+| 没有 LLM judge | `uncertainty_marked` | `programmatic` | false | 用关键词启发式检查是否表达不确定性 |
+
+### 8.6 当前没有的规则生成方式
+
+当前代码没有做这些事：
+
+- 不会让 LLM 读取 Skill 后动态生成一组新规则。
+- 不会读取单独的 `eval.yaml`、`rules.json` 或测试配置文件。
+- 不会从用户反馈里自动提炼评测规则。
+- 不会从历史失败样本里自动归纳新规则。
+- 不会为不同版本 Skill 生成不同的专属规则集。
+
+所以目前所有规则都来自：
+
+```text
+本地代码里的固定规则模板
+  + 当前 Skill 文本
+  + 是否存在 side_query
 ```
 
 ## 9. LLM Judge 规则
@@ -503,7 +596,38 @@ include_llm_rules = False
 
 ### 9.3 当前支持的 LLM judge 规则
 
-当前主要支持：
+当前支持两类 LLM judge 规则。
+
+第一类是通用对齐规则：
+
+```text
+skill_instruction_alignment
+```
+
+这条规则会把 Skill 的 `name`、`description`、`when_to_use`、`tags` 和正文 instructions 整理成一段评测要求，然后让模型判断历史 assistant 回复是否符合这个 Skill 的可观察要求。
+
+它解决的是程序规则不擅长的问题，比如：
+
+- 回复风格是否符合 Skill。
+- 是否按 Skill 要求的工作流回答。
+- 是否漏掉 Skill 明确要求的关键步骤。
+- 是否答成了泛泛建议，而不是 Skill 期望的专项输出。
+
+生成的规则大致是：
+
+```json
+{
+  "rule_id": "skill_instruction_alignment",
+  "kind": "llm_binary",
+  "hard": false,
+  "params": {
+    "mode": "requirement",
+    "requirement_text": "Evaluate whether the assistant response follows this Skill's observable requirements..."
+  }
+}
+```
+
+第二类是专项硬规则：
 
 ```text
 no_unfounded_claims
@@ -528,6 +652,10 @@ no_unfounded_claims
   }
 }
 ```
+
+这条规则是 `hard=true`，如果失败会计入硬失败。
+
+注意：编译出 LLM 规则不等于一定会调用 LLM。只有这个 Skill 有历史对话样本时，评测才会把样本里的历史 assistant 回复交给 LLM judge 判断。没有样本的 Skill 会显示有 `llm_rules`，但 `llm_judgments=0`。
 
 ### 9.4 Judge 输入输出
 
@@ -885,14 +1013,30 @@ YYYYMMDDTHHMMSSZ-<lineage_id_suffix>
 ```text
 Online skill eval:
   data_dir=/path/to/.bear/skill-evolution
-  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=100.0%
+  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=100.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=100.0%
   actions: none=7, add=1, merge=0, discard=0, failed=0, denied=0
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    <skill>: status=incubating, replay=1 (test=0), rules=1, rule_pass=100.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s)
+    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=100.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s)
   report_file=/path/to/online_eval_report.json
 ```
+
+如果这里显示：
+
+```text
+llm=off, llm_rules=0, llm_judgments=0
+```
+
+说明本次评测没有拿到 `side_query`，或者走的是直接模块调用路径，因此只执行程序化规则。
+
+如果这里显示：
+
+```text
+llm=on, llm_rules>0, llm_judgments=0
+```
+
+说明 LLM judge 已经启用，也编译出了 LLM 规则，但当前没有可评测的历史对话样本。
 
 ### 17.3 排序逻辑
 
@@ -915,15 +1059,15 @@ watch
 ```text
 Online skill eval:
   data_dir=/Users/xiao_xiong/Desktop/code/BearCode/.bear/skill-evolution
-  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=100.0%
+  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=100.0%, llm=off, llm_rules=0, llm_judgments=0, llm_pass_rate=0.0%
   actions: none=7, add=1, merge=0, discard=0, failed=0, denied=0
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    政府报告撰写-正式书面化与政策结合: status=incubating, replay=1 (test=0), rules=1, rule_pass=100.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); only 0 promotion-test sample(s); only 2 retrieval judgment(s)
-    zhangxuefeng-perspective: status=incubating, replay=0 (test=0), rules=3, rule_pass=0.0%, hard_failures=0, retrieved=11, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
-    webnovel-writing: status=incubating, replay=0 (test=0), rules=1, rule_pass=0.0%, hard_failures=0, retrieved=5, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
-    code_review: status=unobserved, replay=0 (test=0), rules=1, rule_pass=0.0%, hard_failures=0, retrieved=0, used_rate=0.0%, champion=unobserved - no online replay or usage signal yet
+    政府报告撰写-正式书面化与政策结合: status=incubating, replay=1 (test=0), rules=1, llm_rules=0, llm_judgments=0, rule_pass=100.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); only 0 promotion-test sample(s); only 2 retrieval judgment(s)
+    zhangxuefeng-perspective: status=incubating, replay=0 (test=0), rules=3, llm_rules=0, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=11, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
+    webnovel-writing: status=incubating, replay=0 (test=0), rules=1, llm_rules=0, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=5, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
+    code_review: status=unobserved, replay=0 (test=0), rules=1, llm_rules=0, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=0, used_rate=0.0%, champion=unobserved - no online replay or usage signal yet
   report_file=/Users/xiao_xiong/Desktop/code/BearCode/.bear/skill-evolution/online_eval_report.json
 ```
 
@@ -954,6 +1098,10 @@ Online skill eval:
 | `acceptance_rate` | `100.0%` | 这 1 次候选事件被接受了 |
 | `replay_samples` | `1` | 当前只整理出 1 条可用于复查的历史对话样本 |
 | `rule_pass_rate` | `100.0%` | 已执行的规则判断全部通过，但样本只有 1 条，不能说明整体已经稳定 |
+| `llm` | `off` | 当前这次输出没有启用 LLM judge |
+| `llm_rules` | `0` | 当前没有编译出 LLM judge 规则 |
+| `llm_judgments` | `0` | 当前没有执行 LLM judge 判断 |
+| `llm_pass_rate` | `0.0%` | 没有 LLM 判断结果，所以通过率为 0 |
 
 `actions` 是在线沉淀动作分布：
 
@@ -988,6 +1136,8 @@ incubating=3, unobserved=1
 | `status` | 这个 Skill 当前评测状态 |
 | `replay=1 (test=0)` | 有 1 条历史对话样本，其中 0 条属于晋级测试样本 |
 | `rules=1` | 从当前 `SKILL.md` 编译出了 1 条规则 |
+| `llm_rules=0` | 其中 0 条是 LLM judge 规则 |
+| `llm_judgments=0` | 这次实际执行了 0 次 LLM judge 判断 |
 | `rule_pass=100.0%` | 已有规则判断的通过率 |
 | `hard_failures=0` | 没有硬失败规则 |
 | `retrieved=2` | 后续被检索判断过 2 次 |
