@@ -36,6 +36,7 @@ from .skills import (
     record_feedback,
     skill_stats,
 )
+from .online_skill_eval import format_online_skill_eval_async
 
 
 def parse_args() -> argparse.Namespace:
@@ -230,6 +231,10 @@ async def run_repl(agent: Agent) -> None:
         if inp == "/skill-stats":
             print_info(skill_stats())
             continue
+        if inp == "/skill-eval":
+            side_query = agent._build_side_query(max_tokens=700)
+            print_info(await format_online_skill_eval_async(side_query=side_query))
+            continue
         if inp.startswith("/extract_now"):
             hint = inp[len("/extract_now") :].strip()
             result = await agent.extract_now(hint)
@@ -350,6 +355,7 @@ REPL commands:
   /memory             List saved memories
   /skills             List available skills
   /skill-stats        Show skill usage and evolution stats
+  /skill-eval         Evaluate online skill evolution quality
   /extract_now        Extract the current pending online skill window: /extract_now [hint]
   /skill-feedback     Record feedback: /skill-feedback <skill> <rating> [note]
   /skill-evolve       Evolve a skill: /skill-evolve <skill> <durable lesson>
