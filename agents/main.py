@@ -232,7 +232,7 @@ async def run_repl(agent: Agent) -> None:
             print_info(skill_stats())
             continue
         if inp == "/skill-eval":
-            side_query = agent._build_side_query(max_tokens=700)
+            side_query = agent._build_side_query(max_tokens=2400)
             print_info(await format_online_skill_eval_async(side_query=side_query))
             continue
         if inp.startswith("/extract_now"):

@@ -286,9 +286,16 @@ class Agent:
                     model=model, max_tokens=max(1, int(max_tokens)), system=system,
                 messages=[{"role": "user", "content": user_message}],
                 )
-                logging.log("response context is "+str(resp.message.content))
-                return resp.message.content
-                return "".join(b.text for b in resp.content if b.type == "text")
+                text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+                if not text.strip():
+                    block_types = [str(getattr(b, "type", "")) for b in getattr(resp, "content", [])]
+                    logging.warning(
+                        "side_query returned empty Anthropic-compatible response: model=%s stop_reason=%s content_block_types=%s",
+                        getattr(resp, "model", model),
+                        getattr(resp, "stop_reason", ""),
+                        block_types,
+                    )
+                return text
             return _sq
         if self._openai_client:
             client = self._openai_client
@@ -303,7 +310,19 @@ class Agent:
                     ],
 
                 )
-                return resp.choices[0].message.content or "" if resp.choices else ""
+                if not resp.choices:
+                    logging.warning("side_query returned no OpenAI-compatible choices: model=%s", model)
+                    return ""
+                choice = resp.choices[0]
+                content = choice.message.content or ""
+                if not content.strip():
+                    logging.warning(
+                        "side_query returned empty OpenAI-compatible response: model=%s finish_reason=%s message=%s",
+                        model,
+                        getattr(choice, "finish_reason", ""),
+                        choice.message,
+                    )
+                return content
             return _sq_openai
         return None
     #异步任务取消（Abort）

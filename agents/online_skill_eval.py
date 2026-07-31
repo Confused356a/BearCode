@@ -455,6 +455,7 @@ async def _evaluate_rule_async(
         "Output ONLY strict JSON parseable by json.loads.\n"
         'Schema: {"pass": true|false, "reason": "short reason"}\n'
         "Judge only against the requirement provided.\n"
+        "Do not write analysis, chain-of-thought, markdown, or any text outside the JSON object.\n"
         "Prefer false if the requirement is not clearly satisfied.\n"
     )
     payload = {
