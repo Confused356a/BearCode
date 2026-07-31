@@ -463,16 +463,29 @@ async def _evaluate_rule_async(
         "latest_user_message": sample.get("latest_user", ""),
         "response": str(response_text or ""),
     }
+    raw_judge_response = ""
     try:
-        parsed = _parse_json_object(await side_query(system, json.dumps(payload, ensure_ascii=False)))
+        raw_judge_response = await side_query(system, json.dumps(payload, ensure_ascii=False))
+        parsed = _parse_json_object(raw_judge_response)
     except Exception as exc:
         parsed = {"pass": False, "reason": f"judge failed: {exc}"}
+    reason = str(parsed.get("reason") or "").strip()
+    if not reason:
+        if not str(raw_judge_response or "").strip():
+            reason = "judge returned an empty response"
+        elif not parsed:
+            reason = "judge returned non-JSON response"
+        else:
+            reason = "judge returned no reason"
+    details = {"reason": reason[:500]}
+    if raw_judge_response and not parsed:
+        details["raw_response_preview"] = str(raw_judge_response).strip()[:500]
     return {
         "rule_id": rule.get("rule_id", ""),
         "label": rule.get("label", ""),
         "hard": bool(rule.get("hard")),
         "passed": bool(parsed.get("pass", False)),
-        "details": {"reason": str(parsed.get("reason") or "")[:500]},
+        "details": details,
     }
 
 
@@ -1238,7 +1251,7 @@ def evaluate_online_skill_evolution(
             write_report=write_report,
             write_artifacts=write_artifacts,
             side_query=None,
-            include_llm_rules=True,
+            include_llm_rules=False,
         )
     )
 
@@ -1272,6 +1285,23 @@ async def evaluate_online_skill_evolution_async(
 def _status_rank(status: str) -> int:
     order = {"watch": 0, "incubating": 1, "unobserved": 2, "pruned": 3, "healthy": 4}
     return order.get(str(status or ""), 9)
+
+
+def _format_eval_failure_summary(eval_data: dict[str, Any], *, limit: int = 2) -> str:
+    failures = eval_data.get("failures") if isinstance(eval_data.get("failures"), list) else []
+    parts: list[str] = []
+    for failure in failures[: max(1, int(limit))]:
+        if not isinstance(failure, dict):
+            continue
+        rule_id = str(failure.get("rule_id") or "unknown_rule").strip()
+        details = failure.get("details") if isinstance(failure.get("details"), dict) else {}
+        reason = str(details.get("reason") or details.get("error") or "").strip()
+        if not reason:
+            reason = "no failure reason recorded"
+        parts.append(f"{rule_id}: {reason}")
+    if len(failures) > len(parts):
+        parts.append(f"... {len(failures) - len(parts)} more")
+    return "; ".join(parts)
 
 
 def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
@@ -1331,7 +1361,13 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
             artifacts = item.get("artifacts") if isinstance(item.get("artifacts"), dict) else {}
             promotion = artifacts.get("promotion") if isinstance(artifacts.get("promotion"), dict) else {}
             reasons = "; ".join(str(reason) for reason in item.get("reasons", []) if str(reason).strip())
-            suffix = f" - {reasons}" if reasons else ""
+            failure_summary = _format_eval_failure_summary(eval_data)
+            suffix_parts = []
+            if reasons:
+                suffix_parts.append(reasons)
+            if failure_summary:
+                suffix_parts.append(f"failures: {failure_summary}")
+            suffix = f" - {'; '.join(suffix_parts)}" if suffix_parts else ""
             lines.append(
                 "    "
                 f"{item.get('skill')}: status={item.get('status')}, "

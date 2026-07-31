@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -285,6 +286,8 @@ class Agent:
                     model=model, max_tokens=max(1, int(max_tokens)), system=system,
                 messages=[{"role": "user", "content": user_message}],
                 )
+                logging.log("response context is "+str(resp.message.content))
+                return resp.message.content
                 return "".join(b.text for b in resp.content if b.type == "text")
             return _sq
         if self._openai_client:

@@ -1018,7 +1018,7 @@ Online skill eval:
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=100.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s)
+    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); failures: skill_instruction_alignment: judge returned an empty response
   report_file=/path/to/online_eval_report.json
 ```
 
@@ -1144,6 +1144,7 @@ incubating=3, unobserved=1
 | `used_rate=50.0%` | 被检索后实际使用比例为 50% |
 | `champion=incubating` | 本地最佳版本状态仍然是观察期 |
 | 行尾原因 | 为什么它还没有进入 healthy |
+| `failures: ...` | 规则失败摘要，包含失败规则和 judge reason |
 
 具体到这次输出：
 
