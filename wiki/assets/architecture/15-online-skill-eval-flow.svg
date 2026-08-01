@@ -10,7 +10,7 @@
   <rect class="bg" width="1920" height="1280"/>
   <rect class="bluePanel shadow" x="40" y="34" width="1840" height="120" rx="24"/>
   <text class="title" x="640" y="108">在线 Skills 评测流程图</text>
-  <text class="small" x="600" y="138">从审计数据到 replay、规则、judge、状态与产物的完整流转</text>
+  <text class="small" x="520" y="138">从审计数据到 replay、规则、candidate 试跑、状态与产物的完整流转</text>
 
   <rect class="panel shadow" x="70" y="200" width="1780" height="210" rx="22"/>
   <text class="section" x="120" y="250">第一段：入口与数据读取</text>
@@ -57,7 +57,7 @@
   <path class="line" d="M1375 597H1460"/>
 
   <rect class="panel shadow" x="70" y="780" width="1780" height="250" rx="22"/>
-  <text class="section" x="120" y="830">第三段：规则编译与评判</text>
+  <text class="section" x="120" y="830">第三段：规则评判与候选试跑</text>
   <rect class="card purpleCard" x="120" y="865" width="260" height="105" rx="18"/>
   <text class="label" x="165" y="905">Rule Compiler</text>
   <text class="small" x="148" y="935">从 Skill 文本生成规则</text>
@@ -68,11 +68,11 @@
   <text class="label" x="862" y="905">LLM Judge</text>
   <text class="small" x="842" y="935">pass / reason 二元判断</text>
   <rect class="card orangeCard" x="1155" y="865" width="260" height="105" rx="18"/>
-  <text class="label" x="1202" y="905">Outcomes</text>
-  <text class="small" x="1182" y="935">规则结果与分数</text>
+  <text class="label" x="1182" y="905">Candidate Variants</text>
+  <text class="small" x="1182" y="935">失败规则生成候选</text>
   <rect class="card redCard" x="1500" y="865" width="260" height="105" rx="18"/>
-  <text class="label" x="1550" y="905">Rule Summary</text>
-  <text class="small" x="1534" y="935">通过率 / 硬失败</text>
+  <text class="label" x="1530" y="905">Candidate Eval</text>
+  <text class="small" x="1522" y="935">重放生成回复并评测</text>
   <path class="line" d="M380 917H465"/>
   <path class="line" d="M725 917H810"/>
   <path class="line" d="M1070 917H1155"/>
@@ -80,7 +80,7 @@
 
   <rect class="bluePanel shadow" x="70" y="1075" width="1780" height="140" rx="22"/>
   <text class="section" x="120" y="1125">第四段：门控与产物</text>
-  <text class="small" x="285" y="1124">Rule Summary + Usage Stats -> Status Gate -> Champion Promotion -> eval_spec / outputs / judgments / summary / report</text>
+  <text class="small" x="235" y="1124">Rule Summary + Candidate Summary + Usage Stats -> Status Gate -> Champion Promotion -> eval_spec / outputs / judgments / summary / report</text>
   <path class="gline" d="M780 1162H1150"/>
-  <text class="muted" x="690" y="1195">评测只记录结果，不自动修改 Skill 文件</text>
+  <text class="muted" x="625" y="1195">candidate 和 champion 只写评测产物，不自动覆盖 active Skill 文件</text>
 </svg>

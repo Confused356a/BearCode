@@ -726,6 +726,326 @@ def _summarize_outcomes_from_rows(
     }
 
 
+def _snapshot_with_instructions(snapshot: dict[str, Any], *, instructions: str, label: str) -> dict[str, Any]:
+    out = dict(snapshot or {})
+    out["instructions"] = str(instructions or "")
+    out["mutation_label"] = str(label or "")
+    return out
+
+
+def _append_eval_guards(instructions: str, additions: list[str]) -> str:
+    body = str(instructions or "").rstrip()
+    clean = [str(item or "").strip() for item in additions if str(item or "").strip()]
+    if not clean:
+        return body
+    marker = "## Online Eval Improvement Guards"
+    if marker not in body:
+        body = (body + "\n\n" if body else "") + marker + "\n"
+    for item in clean:
+        line = item if item.startswith("- ") else f"- {item}"
+        if line not in body:
+            body += line + "\n"
+    return body
+
+
+def _candidate_variant_id(*, lineage_id: str, label: str, snapshot: dict[str, Any]) -> str:
+    return f"candidate-{_stable_hash({'lineage_id': lineage_id, 'label': label, 'snapshot': snapshot})[:12]}"
+
+
+def _rule_by_id(rules: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(rule.get("rule_id") or ""): rule for rule in rules if str(rule.get("rule_id") or "")}
+
+
+def _build_heuristic_candidate_variants(
+    *,
+    lineage_id: str,
+    snapshot: dict[str, Any],
+    rules: list[dict[str, Any]],
+    rule_summary: dict[str, Any],
+    max_variants: int = 4,
+) -> list[dict[str, Any]]:
+    rule_lookup = _rule_by_id(rules)
+    failures = rule_summary.get("failures") if isinstance(rule_summary.get("failures"), list) else []
+    if not failures:
+        failures = [{"rule_id": str(rule.get("rule_id") or "")} for rule in rules if str(rule.get("kind") or "") != "programmatic"][:2]
+    variants: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    base_instructions = str(snapshot.get("instructions") or "")
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        rid = str(failure.get("rule_id") or "").strip()
+        if not rid or rid in seen_labels:
+            continue
+        rule = rule_lookup.get(rid, {})
+        details = failure.get("details") if isinstance(failure.get("details"), dict) else {}
+        reason = str(details.get("reason") or details.get("error") or "").strip()
+        additions: list[str] = []
+        if rid == "must_cite_sources":
+            additions.append("Always cite concrete sources or links for factual claims.")
+        elif rid == "paragraph_limit":
+            limit = int((rule.get("params") or {}).get("max_paragraphs", 3) or 3)
+            additions.append(f"Keep the final answer within {limit} short paragraphs.")
+        elif rid == "lead_with_conclusion":
+            additions.append("Open with a direct conclusion or answer before elaboration.")
+        elif rid == "json_parseable":
+            additions.append("Output valid JSON only, with no markdown fences or extra commentary.")
+        elif rid == "markdown_table":
+            additions.append("Include a markdown table when presenting structured comparisons or plans.")
+        elif rid == "no_unfounded_claims":
+            additions.append("Do not invent facts; if evidence is missing, state uncertainty explicitly.")
+        elif rid == "skill_instruction_alignment":
+            additions.append("Satisfy the Skill's observable requirements before adding extra clarifications or commentary.")
+        else:
+            requirement = str((rule.get("params") or {}).get("requirement_text") or "").strip()
+            if requirement:
+                additions.append(f"Requirement to preserve: {requirement[:500]}")
+        if reason:
+            additions.append(f"Address prior evaluation failure: {reason[:500]}")
+        if not additions:
+            continue
+        label = f"heuristic:{rid}"
+        new_snapshot = _snapshot_with_instructions(
+            snapshot,
+            instructions=_append_eval_guards(base_instructions, additions),
+            label=label,
+        )
+        if str(new_snapshot.get("instructions") or "").strip() == base_instructions.strip():
+            continue
+        variants.append(
+            {
+                "variant_id": _candidate_variant_id(lineage_id=lineage_id, label=label, snapshot=new_snapshot),
+                "label": label,
+                "mutation_type": "heuristic",
+                "parent_variant_id": "current_active",
+                "snapshot": new_snapshot,
+                "notes": "; ".join(additions)[:1000],
+            }
+        )
+        seen_labels.add(rid)
+        if len(variants) >= max(1, int(max_variants)):
+            break
+    return variants
+
+
+async def _build_llm_candidate_variant_async(
+    *,
+    lineage_id: str,
+    snapshot: dict[str, Any],
+    rules: list[dict[str, Any]],
+    rule_summary: dict[str, Any],
+    side_query: SideQuery | None,
+) -> dict[str, Any] | None:
+    if side_query is None:
+        return None
+    failures = rule_summary.get("failures") if isinstance(rule_summary.get("failures"), list) else []
+    if not failures:
+        return None
+    system = (
+        "You improve a local agent Skill for replay evaluation.\n"
+        "Output ONLY strict JSON parseable by json.loads.\n"
+        'Schema: {"description": "...", "instructions": "...", "notes": "..."}\n'
+        "Make a small durable improvement. Do not invent new capabilities. Preserve the same Skill identity.\n"
+    )
+    payload = {
+        "skill": {
+            "name": snapshot.get("name", ""),
+            "description": snapshot.get("description", ""),
+            "when_to_use": snapshot.get("when_to_use", ""),
+            "instructions": snapshot.get("instructions", ""),
+        },
+        "rules": rules[:6],
+        "failures": failures[:4],
+    }
+    try:
+        parsed = _parse_json_object(await side_query(system, json.dumps(payload, ensure_ascii=False)))
+    except Exception:
+        return None
+    instructions = str(parsed.get("instructions") or "").strip()
+    if not instructions:
+        return None
+    label = "llm_mutation"
+    new_snapshot = dict(snapshot or {})
+    new_snapshot["description"] = str(parsed.get("description") or snapshot.get("description") or "")
+    new_snapshot["instructions"] = instructions
+    new_snapshot["mutation_label"] = label
+    return {
+        "variant_id": _candidate_variant_id(lineage_id=lineage_id, label=label, snapshot=new_snapshot),
+        "label": label,
+        "mutation_type": "llm",
+        "parent_variant_id": "current_active",
+        "snapshot": new_snapshot,
+        "notes": str(parsed.get("notes") or "LLM-guided mutation").strip()[:1000],
+    }
+
+
+async def _generate_variant_response_async(
+    *,
+    variant: dict[str, Any],
+    sample: dict[str, Any],
+    side_query: SideQuery | None,
+) -> str:
+    if side_query is None:
+        return ""
+    snapshot = variant.get("snapshot") if isinstance(variant.get("snapshot"), dict) else {}
+    system = str(snapshot.get("instructions") or snapshot.get("description") or "").strip()
+    messages = sample.get("messages") if isinstance(sample.get("messages"), list) else []
+    history = "\n\n".join(
+        f"[{str(item.get('role') or '').strip()}] {str(item.get('content') or '').strip()}"
+        for item in messages
+        if isinstance(item, dict) and str(item.get("content") or "").strip()
+    )
+    user = (
+        "Replay the following conversation with the candidate Skill instructions already injected.\n\n"
+        f"Conversation:\n{history}\n\n"
+        "Respond to the latest user message. Return only the assistant response."
+    )
+    try:
+        return str(await side_query(system, user) or "").strip()
+    except Exception as exc:
+        return f"[candidate_response_failed: {exc}]"
+
+
+async def _evaluate_generated_variant_async(
+    *,
+    variant: dict[str, Any],
+    samples: list[dict[str, Any]],
+    rules: list[dict[str, Any]],
+    side_query: SideQuery | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    outputs: list[dict[str, Any]] = []
+    outcomes: list[dict[str, Any]] = []
+    snapshot = variant.get("snapshot") if isinstance(variant.get("snapshot"), dict) else {}
+    skill_name = str(snapshot.get("name") or variant.get("label") or "")
+    for sample in samples:
+        response = await _generate_variant_response_async(variant=variant, sample=sample, side_query=side_query)
+        outputs.append(
+            {
+                "sample_id": sample.get("sample_id", ""),
+                "variant_id": variant.get("variant_id", ""),
+                "split": sample.get("split", ""),
+                "source_type": sample.get("source_type", ""),
+                "latest_user": sample.get("latest_user", ""),
+                "response_source": "candidate_generated",
+                "response_text": response,
+            }
+        )
+        for rule in rules:
+            outcome = await _evaluate_rule_async(
+                rule,
+                response,
+                sample=sample,
+                skill_name=skill_name,
+                side_query=side_query,
+            )
+            outcome["sample_id"] = sample.get("sample_id", "")
+            outcome["split"] = sample.get("split", "")
+            outcome["kind"] = rule.get("kind", "programmatic")
+            outcome["variant_id"] = variant.get("variant_id", "")
+            outcome["score"] = (2.0 if outcome.get("hard") else 1.0) if outcome.get("passed") else 0.0
+            outcomes.append(outcome)
+    summary = _summarize_outcomes_from_rows(rules=rules, samples=samples, outcomes=outcomes)
+    return outputs, outcomes, summary
+
+
+def _variant_summary_from_eval(variant: dict[str, Any], summary: dict[str, Any], sample_count: int) -> dict[str, Any]:
+    return {
+        "variant_id": variant.get("variant_id", ""),
+        "label": variant.get("label", ""),
+        "mutation_type": variant.get("mutation_type", ""),
+        "parent_variant_id": variant.get("parent_variant_id", ""),
+        "sample_count": int(sample_count or 0),
+        "total_score": float(summary.get("total_score", 0.0) or 0.0),
+        "average_score": float(summary.get("average_score", 0.0) or 0.0),
+        "hard_failures": int(summary.get("hard_failures", 0) or 0),
+        "passed_rules": int(summary.get("passed_rules", 0) or 0),
+        "total_rules": int(summary.get("outcome_count", 0) or 0),
+        "rule_pass_rate": float(summary.get("pass_rate", 0.0) or 0.0),
+        "notes": str(variant.get("notes") or ""),
+    }
+
+
+async def _build_candidate_eval_bundle_async(
+    *,
+    lineage_id: str,
+    snapshot: dict[str, Any],
+    replay_pool: list[dict[str, Any]],
+    rules: list[dict[str, Any]],
+    rule_summary: dict[str, Any],
+    side_query: SideQuery | None,
+) -> dict[str, Any]:
+    if side_query is None or not replay_pool:
+        return {}
+    variants = _build_heuristic_candidate_variants(
+        lineage_id=lineage_id,
+        snapshot=snapshot,
+        rules=rules,
+        rule_summary=rule_summary,
+    )
+    llm_variant = await _build_llm_candidate_variant_async(
+        lineage_id=lineage_id,
+        snapshot=snapshot,
+        rules=rules,
+        rule_summary=rule_summary,
+        side_query=side_query,
+    )
+    if llm_variant is not None:
+        variants.append(llm_variant)
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for variant in variants:
+        key = _stable_hash((variant.get("snapshot") or {}).get("instructions", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(variant)
+    dev_samples = [sample for sample in replay_pool if sample.get("split") == "mutate_dev"] or list(replay_pool)
+    test_samples = [sample for sample in replay_pool if sample.get("split") == "promotion_test"]
+    outputs: list[dict[str, Any]] = []
+    judgments: list[dict[str, Any]] = []
+    scored: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for variant in deduped[:4]:
+        variant_outputs, variant_outcomes, variant_summary = await _evaluate_generated_variant_async(
+            variant=variant,
+            samples=dev_samples,
+            rules=rules,
+            side_query=side_query,
+        )
+        outputs.extend(variant_outputs)
+        judgments.extend(variant_outcomes)
+        scored.append((variant, variant_summary, _variant_summary_from_eval(variant, variant_summary, len(dev_samples))))
+    if not scored:
+        return {}
+    scored.sort(
+        key=lambda item: (
+            float(item[1].get("average_score", 0.0) or 0.0),
+            -int(item[1].get("hard_failures", 0) or 0),
+        ),
+        reverse=True,
+    )
+    best_variant, best_dev_eval, best_dev_summary = scored[0]
+    best_test_summary: dict[str, Any] = {}
+    if test_samples:
+        test_outputs, test_outcomes, test_eval = await _evaluate_generated_variant_async(
+            variant=best_variant,
+            samples=test_samples,
+            rules=rules,
+            side_query=side_query,
+        )
+        outputs.extend(test_outputs)
+        judgments.extend(test_outcomes)
+        best_test_summary = _variant_summary_from_eval(best_variant, test_eval, len(test_samples))
+    return {
+        "candidate_variants": deduped[:4],
+        "variant_summaries": [item[2] for item in scored],
+        "best_variant": best_variant,
+        "best_dev_summary": best_dev_summary,
+        "best_test_summary": best_test_summary,
+        "outputs": outputs,
+        "judgments": judgments,
+    }
+
+
 def _skill_status(
     *,
     replay_count: int,
@@ -827,6 +1147,24 @@ def _set_champion(lineage_id: str, payload: dict[str, Any]) -> None:
     _write_json(path, registry)
     champion_dir = _lineage_champion_dir(lineage_id)
     _write_json(champion_dir / "champion.json", payload)
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+    if snapshot:
+        _write_champion_skill_file(champion_dir / "SKILL.md", snapshot)
+
+
+def _write_champion_skill_file(path: Path, snapshot: dict[str, Any]) -> None:
+    name = str(snapshot.get("name") or "unnamed-skill").strip()
+    description = str(snapshot.get("description") or "").strip()
+    when_to_use = str(snapshot.get("when_to_use") or "").strip()
+    instructions = str(snapshot.get("instructions") or "").strip()
+    lines = ["---", f"name: {name}"]
+    if description:
+        lines.append(f"description: {description}")
+    if when_to_use:
+        lines.append(f"when-to-use: {when_to_use}")
+    lines.extend(["---", "", instructions])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _promotion_decision(
@@ -897,6 +1235,7 @@ def _persist_eval_artifacts(
     rule_summary: dict[str, Any],
     status: str,
     reasons: list[str],
+    candidate_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lineage_id = _lineage_id_for_skill(skill_name)
     eval_dir = _lineage_eval_dir(lineage_id)
@@ -924,6 +1263,8 @@ def _persist_eval_artifacts(
         }
         for sample in replay_pool
     ]
+    bundle = candidate_bundle if isinstance(candidate_bundle, dict) else {}
+    outputs.extend(list(bundle.get("outputs") or []))
     judgments = [
         {
             "sample_id": outcome.get("sample_id", ""),
@@ -940,6 +1281,23 @@ def _persist_eval_artifacts(
         for outcome in list(rule_summary.get("outcomes") or [])
         if isinstance(outcome, dict)
     ]
+    for outcome in list(bundle.get("judgments") or []):
+        if not isinstance(outcome, dict):
+            continue
+        judgments.append(
+            {
+                "sample_id": outcome.get("sample_id", ""),
+                "variant_id": outcome.get("variant_id", ""),
+                "split": outcome.get("split", ""),
+                "rule_id": outcome.get("rule_id", ""),
+                "label": outcome.get("label", ""),
+                "kind": outcome.get("kind", "programmatic"),
+                "hard": bool(outcome.get("hard")),
+                "passed": bool(outcome.get("passed")),
+                "score": float(outcome.get("score", 0.0) or 0.0),
+                "details": outcome.get("details", {}),
+            }
+        )
     _write_jsonl(run_dir / "outputs.jsonl", outputs)
     _write_jsonl(run_dir / "judgments.jsonl", judgments)
 
@@ -949,10 +1307,24 @@ def _persist_eval_artifacts(
         rule_summary=rule_summary,
         replay_pool=replay_pool,
     )
+    promotion_candidate = candidate_summary
+    promotion_snapshot = snapshot
+    best_variant = bundle.get("best_variant") if isinstance(bundle.get("best_variant"), dict) else {}
+    best_dev_summary = bundle.get("best_dev_summary") if isinstance(bundle.get("best_dev_summary"), dict) else {}
+    best_test_summary = bundle.get("best_test_summary") if isinstance(bundle.get("best_test_summary"), dict) else {}
+    candidate_beats_current = bool(
+        best_dev_summary
+        and float(best_dev_summary.get("average_score", 0.0) or 0.0)
+        >= float(candidate_summary.get("average_score", 0.0) or 0.0) + DEFAULT_MIN_SCORE_DELTA
+        and int(best_dev_summary.get("hard_failures", 0) or 0) <= int(candidate_summary.get("hard_failures", 0) or 0)
+    )
+    if best_variant and best_test_summary and candidate_beats_current:
+        promotion_candidate = dict(best_test_summary)
+        promotion_snapshot = best_variant.get("snapshot") if isinstance(best_variant.get("snapshot"), dict) else snapshot
     champion_before = _load_champion(lineage_id)
     promotion = _promotion_decision(
         status=status,
-        candidate=candidate_summary,
+        candidate=promotion_candidate,
         champion=champion_before,
     )
     if promotion.get("promoted"):
@@ -961,8 +1333,8 @@ def _persist_eval_artifacts(
             {
                 "lineage_id": lineage_id,
                 "skill": skill_name,
-                "snapshot": snapshot,
-                "summary": candidate_summary,
+                "snapshot": promotion_snapshot,
+                "summary": promotion_candidate,
                 "promotion": promotion,
                 "updated_at": _utc_now(),
             },
@@ -975,6 +1347,17 @@ def _persist_eval_artifacts(
         "status": status,
         "reasons": reasons,
         "candidate": candidate_summary,
+        "candidate_variants": [
+            {
+                key: value
+                for key, value in dict(variant).items()
+                if key != "snapshot"
+            }
+            for variant in list(bundle.get("candidate_variants") or [])
+            if isinstance(variant, dict)
+        ],
+        "variant_summaries": list(bundle.get("variant_summaries") or []),
+        "best_candidate": dict(bundle.get("best_dev_summary") or {}),
         "promotion": promotion,
         "replay_counts": {
             "total": len(replay_pool),
@@ -1103,6 +1486,14 @@ async def _evaluate_online_skill_evolution_core(
             lineage.get("current_version", lifecycle.get("version", ""))
         )
         snapshot["version"] = str(current_version or "")
+        candidate_bundle = await _build_candidate_eval_bundle_async(
+            lineage_id=_lineage_id_for_skill(name),
+            snapshot=snapshot,
+            replay_pool=replay_pool,
+            rules=rules,
+            rule_summary=rule_summary,
+            side_query=side_query,
+        )
         artifacts = (
             _persist_eval_artifacts(
                 skill_name=name,
@@ -1112,6 +1503,7 @@ async def _evaluate_online_skill_evolution_core(
                 rule_summary=rule_summary,
                 status=status,
                 reasons=reasons,
+                candidate_bundle=candidate_bundle,
             )
             if write_artifacts
             else {}
@@ -1144,6 +1536,11 @@ async def _evaluate_online_skill_evolution_core(
                     "sources": sorted({str(item.get("source_type") or "") for item in replay_pool if item.get("source_type")}),
                 },
                 "eval": public_rule_summary,
+                "candidate_eval": {
+                    "candidate_count": len(list(candidate_bundle.get("candidate_variants") or [])) if isinstance(candidate_bundle, dict) else 0,
+                    "best_candidate": dict(candidate_bundle.get("best_dev_summary") or {}) if isinstance(candidate_bundle, dict) else {},
+                    "has_promotion_test_eval": bool((candidate_bundle or {}).get("best_test_summary")) if isinstance(candidate_bundle, dict) else False,
+                },
                 "artifacts": artifacts,
                 "file": lifecycle.get("file", ""),
                 "skill_dir": snapshot.get("skill_dir", ""),
@@ -1158,6 +1555,7 @@ async def _evaluate_online_skill_evolution_core(
     total_llm_rules = 0
     total_llm_rule_outcomes = 0
     total_llm_rule_passed = 0
+    total_candidate_variants = 0
     for item in skills:
         status = str(item.get("status") or "unknown")
         status_counts[status] = int(status_counts.get(status, 0)) + 1
@@ -1174,6 +1572,8 @@ async def _evaluate_online_skill_evolution_core(
         llm_outcome_count = int(eval_data.get("llm_outcome_count", 0) or 0)
         total_llm_rule_outcomes += llm_outcome_count
         total_llm_rule_passed += round(float(eval_data.get("llm_pass_rate", 0.0) or 0.0) * llm_outcome_count)
+        candidate_eval = item.get("candidate_eval") if isinstance(item.get("candidate_eval"), dict) else {}
+        total_candidate_variants += int(candidate_eval.get("candidate_count", 0) or 0)
 
     report = {
         "generated_at": _utc_now(),
@@ -1216,6 +1616,7 @@ async def _evaluate_online_skill_evolution_core(
             "llm_rules": total_llm_rules,
             "llm_rule_outcomes": total_llm_rule_outcomes,
             "llm_rule_pass_rate": _ratio(total_llm_rule_passed, total_llm_rule_outcomes),
+            "candidate_variants": total_candidate_variants,
         },
         "skills": skills,
         "recent_failures": recent_failures[-10:],
@@ -1328,7 +1729,8 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
             f"llm={'on' if llm_enabled else 'off'}, "
             f"llm_rules={aggregate.get('llm_rules', 0)}, "
             f"llm_judgments={aggregate.get('llm_rule_outcomes', 0)}, "
-            f"llm_pass_rate={_pct(float(aggregate.get('llm_rule_pass_rate', 0) or 0))}"
+            f"llm_pass_rate={_pct(float(aggregate.get('llm_rule_pass_rate', 0) or 0))}, "
+            f"candidates={aggregate.get('candidate_variants', 0)}"
         ),
         (
             "  actions: "
@@ -1359,6 +1761,8 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
         for item in ranked[:20]:
             replay = item.get("replay") if isinstance(item.get("replay"), dict) else {}
             eval_data = item.get("eval") if isinstance(item.get("eval"), dict) else {}
+            candidate_eval = item.get("candidate_eval") if isinstance(item.get("candidate_eval"), dict) else {}
+            best_candidate = candidate_eval.get("best_candidate") if isinstance(candidate_eval.get("best_candidate"), dict) else {}
             artifacts = item.get("artifacts") if isinstance(item.get("artifacts"), dict) else {}
             promotion = artifacts.get("promotion") if isinstance(artifacts.get("promotion"), dict) else {}
             reasons = "; ".join(str(reason) for reason in item.get("reasons", []) if str(reason).strip())
@@ -1377,6 +1781,8 @@ def format_online_skill_eval(report: dict[str, Any] | None = None) -> str:
                 f"rules={eval_data.get('rule_count', 0)}, "
                 f"llm_rules={eval_data.get('llm_rule_count', 0)}, "
                 f"llm_judgments={eval_data.get('llm_outcome_count', 0)}, "
+                f"candidates={candidate_eval.get('candidate_count', 0)}, "
+                f"best_candidate_score={float(best_candidate.get('average_score', 0.0) or 0.0):.2f}, "
                 f"rule_pass={_pct(float(eval_data.get('pass_rate', 0) or 0))}, "
                 f"hard_failures={eval_data.get('hard_failures', 0)}, "
                 f"retrieved={item.get('retrieved', 0)}, "

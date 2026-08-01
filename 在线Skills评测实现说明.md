@@ -14,11 +14,11 @@ REPL 命令入口：
 /skill-eval
 ```
 
-当前评测只做观察、评估和记录。它可以调用 LLM 判断某条规则是否满足，但不会让 LLM 重新生成 replay 回复，也不会自动修改、演化、删除或归档 `SKILL.md`。
+当前评测会做观察、规则评估、候选变体试跑和记录。它可以调用 LLM 判断某条规则是否满足，也可以为候选变体重新生成 replay 回复做对比评测；但不会自动覆盖、删除或归档当前 active `SKILL.md`。
 
 ## 0. 评测整体思路
 
-在线 Skills 评测的核心思路不是直接问“这个 Skill 写得好不好”，而是看它在真实使用里有没有足够证据证明自己有用、稳定、符合要求。
+在线 Skills 评测的核心思路不是直接问“这个 Skill 写得好不好”，而是先看它在真实使用里有没有足够证据，再用规则判断历史回复是否符合 Skill 要求；如果发现失败规则，会生成候选改进版本重新试跑，最后只在证据足够时记录 champion。
 
 它大致按下面的顺序工作：
 
@@ -28,16 +28,19 @@ REPL 命令入口：
   -> 把历史对话整理成可复查的样本
   -> 从 Skill 文档里提取可检查的要求
   -> 检查历史回复是否满足这些要求
+  -> 根据失败规则生成候选改进版本
+  -> 用候选版本重新生成回复并评测
   -> 再看这个 Skill 后续有没有被检索、相关、实际使用
   -> 最后给出观察状态和原因
 ```
 
-换句话说，当前评测更像一个“在线质量看板”。它不会马上决定某个 Skill 必须保留或删除，而是持续积累证据：
+换句话说，当前评测是“在线质量看板 + 候选改进试跑”。它不会马上覆盖线上 Skill，而是持续积累证据：
 
 - 如果一个 Skill 没有真实对话，也没有被使用过，就只能标记为未观察到。
 - 如果已经有一些使用信号，但样本太少，还不能说明稳定，就会先放在观察期。
+- 如果历史回复未通过规则，会生成候选变体，并用 replay 重新生成候选回复做对比。
 - 如果样本数量、规则通过情况、后续使用情况都达标，才会被认为比较健康。
-- 如果后续要做自动演化或自动淘汰，可以基于这份评测报告继续扩展，但当前代码还没有自动改写 Skill 文件。
+- 如果候选变体明显优于当前版本，并且满足 promotion gate，才可能被记录为 champion 产物；当前代码仍不会自动改写 active Skill 文件。
 
 后文会使用一些实现名词。可以先这样理解：
 
@@ -70,6 +73,8 @@ REPL 命令入口：
   -> 构造并固化 replay pool
   -> 从 SKILL.md 编译 programmatic / llm_binary 规则
   -> 对历史 latest_assistant 执行规则评测
+  -> 基于失败规则生成候选变体
+  -> 用候选变体重新生成 replay 回复并评测
   -> 合并 retrieved / relevant / used
   -> 计算 status
   -> 判断 champion promotion
@@ -317,7 +322,7 @@ online_skill_provenance.json 中的 sources
 - 只保留 `user` 和 `assistant` 角色。
 - 没有用户消息的窗口不进入 replay。
 - 同一段对话生成相同 `sample_id`，便于去重。
-- 当前只评估历史 `latest_assistant`，不重新生成回复。
+- current active 基线先评估历史 `latest_assistant`；candidate 变体试跑阶段会基于同一 replay 重新生成候选回复。
 
 ## 6. Frozen Replay Pool
 
@@ -849,7 +854,7 @@ pruned
 
 `champion` 是某条 lineage 当前本地评测记录里的已知健康版本。
 
-它不是发布机制，也不是自动回滚机制。当前实现只是把当前 active Skill 的评测表现记录下来，作为后续比较参考。
+它不是发布机制，也不是自动回滚机制。当前实现会把通过门槛的 current active 或候选变体记录下来，作为后续比较参考。
 
 ### 14.2 当前代码怎么做
 
@@ -862,7 +867,7 @@ _set_champion()
 _persist_eval_artifacts()
 ```
 
-当前 active Skill 被视为 candidate。
+评测会先生成 current active 的评测摘要；如果存在候选变体，并且候选变体在 dev 样本上明显优于 current active 且硬失败不增加，则优先把该候选变体作为 promotion candidate。否则仍使用 current active 作为 promotion candidate。
 
 只有状态为：
 
@@ -891,6 +896,7 @@ DEFAULT_MIN_SCORE_DELTA = 0.01
 ```text
 .bear/skill-evolution/online-eval/champions.json
 .bear/skill-evolution/online-eval/champions/<lineage_id>/champion.json
+.bear/skill-evolution/online-eval/champions/<lineage_id>/SKILL.md
 ```
 
 ## 15. 输出产物
@@ -918,6 +924,7 @@ DEFAULT_MIN_SCORE_DELTA = 0.01
   runs/<lineage_id>/<run_id>/summary.json
   champions.json
   champions/<lineage_id>/champion.json
+  champions/<lineage_id>/SKILL.md
 ```
 
 `run_id` 格式：
@@ -1013,12 +1020,12 @@ YYYYMMDDTHHMMSSZ-<lineage_id_suffix>
 ```text
 Online skill eval:
   data_dir=/path/to/.bear/skill-evolution
-  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=50.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=0.0%
+  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=50.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=0.0%, candidates=1
   actions: none=7, add=1, merge=0, discard=0, failed=0, denied=0
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); failures: skill_instruction_alignment: <judge reason>
+    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, candidates=1, best_candidate_score=3.00, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); failures: skill_instruction_alignment: <judge reason>
   report_file=/path/to/online_eval_report.json
 ```
 
@@ -1059,15 +1066,15 @@ watch
 ```text
 Online skill eval:
   data_dir=/Users/xiao_xiong/Desktop/code/BearCode/.bear/skill-evolution
-  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=50.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=0.0%
+  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=50.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=0.0%, candidates=1
   actions: none=7, add=1, merge=0, discard=0, failed=0, denied=0
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    政府报告撰写-正式书面化与政策结合: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); only 0 promotion-test sample(s); only 2 retrieval judgment(s); failures: skill_instruction_alignment: Response fails to deliver a ~500-word formal report as requested; it includes clarifying questions and a draft exceeding the word limit.
-    zhangxuefeng-perspective: status=incubating, replay=0 (test=0), rules=4, llm_rules=1, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=12, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
-    webnovel-writing: status=incubating, replay=0 (test=0), rules=2, llm_rules=1, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=6, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
-    code_review: status=unobserved, replay=0 (test=0), rules=2, llm_rules=1, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=0, used_rate=0.0%, champion=unobserved - no online replay or usage signal yet
+    政府报告撰写-正式书面化与政策结合: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, candidates=1, best_candidate_score=3.00, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); only 0 promotion-test sample(s); only 2 retrieval judgment(s); failures: skill_instruction_alignment: Response fails to deliver a ~500-word formal report as requested; it includes clarifying questions and a draft exceeding the word limit.
+    zhangxuefeng-perspective: status=incubating, replay=0 (test=0), rules=4, llm_rules=1, llm_judgments=0, candidates=0, best_candidate_score=0.00, rule_pass=0.0%, hard_failures=0, retrieved=12, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
+    webnovel-writing: status=incubating, replay=0 (test=0), rules=2, llm_rules=1, llm_judgments=0, candidates=0, best_candidate_score=0.00, rule_pass=0.0%, hard_failures=0, retrieved=6, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
+    code_review: status=unobserved, replay=0 (test=0), rules=2, llm_rules=1, llm_judgments=0, candidates=0, best_candidate_score=0.00, rule_pass=0.0%, hard_failures=0, retrieved=0, used_rate=0.0%, champion=unobserved - no online replay or usage signal yet
   report_file=/Users/xiao_xiong/Desktop/code/BearCode/.bear/skill-evolution/online_eval_report.json
 ```
 
@@ -1104,6 +1111,7 @@ Online skill eval:
 | `llm_rules` | `4` | 所有 Skill 总共编译出 4 条 LLM judge 规则。当前 4 个 Skill 各有 1 条通用 LLM 对齐规则 |
 | `llm_judgments` | `1` | 实际执行了 1 次 LLM judge 判断。虽然有 4 条 LLM 规则，但只有 1 条 replay 样本可评 |
 | `llm_pass_rate` | `0.0%` | LLM judge 判断通过率。当前唯一一次 LLM 判断失败，所以是 0% |
+| `candidates` | `1` | 当前评测生成并评估了 1 个候选变体 |
 
 `actions` 是在线沉淀动作分布：
 
@@ -1144,6 +1152,8 @@ incubating=3, unobserved=1
 | `hard_failures=0` | 没有硬失败规则 |
 | `retrieved=2` | 后续被检索判断过 2 次 |
 | `used_rate=50.0%` | 被检索后实际使用比例为 50% |
+| `candidates=1` | 生成并评测了 1 个候选变体 |
+| `best_candidate_score=3.00` | 当前候选变体里最高的平均分 |
 | `champion=incubating` | 本地最佳版本状态仍然是观察期 |
 | 行尾原因 | 为什么它还没有进入 healthy |
 | `failures: ...` | 规则失败摘要，包含失败规则和 judge reason |
@@ -1159,6 +1169,7 @@ incubating=3, unobserved=1
 
 - `llm_rules=1` 只表示这个 Skill 编译出了 LLM 规则，不等于已经调用 LLM。
 - `llm_judgments=1` 才表示实际调用了 LLM judge。没有 replay 样本时，`llm_judgments` 会是 0。
+- `candidates` 表示候选变体数量。候选变体只写入评测产物，不会自动覆盖当前 active `SKILL.md`。
 
 `report_file` 是完整 JSON 报告路径：
 
@@ -1179,17 +1190,20 @@ incubating=3, unobserved=1
 - 稳定 replay split。
 - programmatic 规则。
 - LLM judge 二元规则。
+- 基于失败规则的 heuristic candidate variant。
+- LLM candidate variant。
+- candidate replay response 生成与评测。
 - usage gate。
 - status gate。
 - run artifacts。
-- 本地 champion 记录。
+- 本地 champion 记录与 champion `SKILL.md` 产物。
 
 ### 18.2 边界总结
 
 ```text
 评测可以调用 LLM 判断规则是否满足，
-但不会用 LLM 生成新的 replay 回复，
-也不会自动改变 Skill 文件。
+也可以为候选变体生成 replay 回复，
+但不会自动覆盖当前 active Skill 文件。
 ```
 
 ## 19. 总结
@@ -1201,7 +1215,8 @@ incubating=3, unobserved=1
 从在线 provenance 构造并固化 replay pool，
 从当前 SKILL.md 编译 programmatic 和可选 llm_binary 规则，
 评估历史 latest_assistant 是否满足规则，
+基于失败规则生成候选变体并评测 candidate replay 回复，
 合并 retrieved / relevant / used 统计，
 根据 replay、规则、usage gate 判断状态，
-写出 report、eval spec、run artifacts 和 champion 记录。
+写出 report、eval spec、run artifacts、candidate artifacts 和 champion 记录。
 ```

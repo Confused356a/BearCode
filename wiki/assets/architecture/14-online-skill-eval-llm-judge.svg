@@ -10,7 +10,7 @@
   <rect class="bg" width="1920" height="1280"/>
   <rect class="bluePanel shadow" x="40" y="34" width="1840" height="120" rx="24"/>
   <text class="title" x="650" y="108">在线 Skills 评测架构</text>
-  <text class="small" x="560" y="138">入口分流 · Frozen Replay · Programmatic Rules · LLM Judge · Usage Gate · Champion</text>
+  <text class="small" x="500" y="138">入口分流 · Frozen Replay · Rules/Judge · Candidate Variants · Usage Gate · Champion</text>
 
   <rect class="panel shadow" x="60" y="210" width="360" height="790" rx="22"/>
   <text class="section" x="168" y="260">评测入口</text>
@@ -55,12 +55,12 @@
   <text class="small" x="1042" y="612">programmatic / llm_binary</text>
   <rect class="card purpleCard" x="1005" y="665" width="340" height="90" rx="18"/>
   <text class="label" x="1088" y="702">Rule Engine</text>
-  <text class="small" x="1046" y="732">代码检查 + LLM 二元判断</text>
+  <text class="small" x="1038" y="732">历史回复 + candidate 回复评测</text>
   <rect class="card orangeCard" x="1005" y="785" width="340" height="90" rx="18"/>
-  <text class="label" x="1084" y="822">Usage Gate</text>
-  <text class="small" x="1056" y="852">相关率 / 使用率门控</text>
+  <text class="label" x="1054" y="822">Candidate Variants</text>
+  <text class="small" x="1040" y="852">失败规则驱动候选试跑</text>
   <rect class="card redCard" x="1005" y="905" width="340" height="70" rx="18"/>
-  <text class="label" x="1082" y="948">Status + Champion</text>
+  <text class="label" x="1068" y="948">Usage + Champion</text>
 
   <rect class="panel shadow" x="1480" y="210" width="380" height="790" rx="22"/>
   <text class="section" x="1592" y="260">输出产物</text>
@@ -75,7 +75,7 @@
   <text class="small" x="1538" y="636">outputs / judgments / summary</text>
   <rect class="card redCard" x="1520" y="694" width="300" height="95" rx="18"/>
   <text class="label" x="1580" y="734">Champion</text>
-  <text class="small" x="1552" y="764">champions.json</text>
+  <text class="small" x="1536" y="764">champions.json / SKILL.md</text>
   <rect class="card blueCard" x="1520" y="822" width="300" height="95" rx="18"/>
   <text class="label" x="1590" y="862">Report</text>
   <text class="small" x="1538" y="892">online_eval_report.json</text>
@@ -93,5 +93,5 @@
 
   <rect class="bluePanel shadow" x="160" y="1060" width="1600" height="140" rx="22"/>
   <text class="section" x="812" y="1110">评测边界</text>
-  <text class="small" x="290" y="1156">LLM judge 只判断规则是否满足，不重新生成 replay 回复；评测只记录结果，不自动修改或归档 SKILL.md。</text>
+  <text class="small" x="248" y="1156">LLM judge 判断规则；candidate 会生成 replay 回复试跑；评测写 champion 产物，但不自动覆盖 active SKILL.md。</text>
 </svg>
