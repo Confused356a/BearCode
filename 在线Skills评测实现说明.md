@@ -106,7 +106,7 @@ REPL 中输入：
 
 ```text
 agents/main.py
-  -> agent._build_side_query(max_tokens=700)
+  -> agent._build_side_query(max_tokens=2400)
   -> format_online_skill_eval_async(side_query=side_query)
   -> evaluate_online_skill_evolution_async(side_query=side_query)
 ```
@@ -579,7 +579,7 @@ skill_instruction_alignment
 REPL `/skill-eval` 会构造：
 
 ```text
-side_query = agent._build_side_query(max_tokens=700)
+side_query = agent._build_side_query(max_tokens=2400)
 ```
 
 只要 `side_query` 可用：
@@ -1013,12 +1013,12 @@ YYYYMMDDTHHMMSSZ-<lineage_id_suffix>
 ```text
 Online skill eval:
   data_dir=/path/to/.bear/skill-evolution
-  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=100.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=100.0%
+  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=50.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=0.0%
   actions: none=7, add=1, merge=0, discard=0, failed=0, denied=0
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); failures: skill_instruction_alignment: judge returned an empty response
+    <skill>: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); failures: skill_instruction_alignment: <judge reason>
   report_file=/path/to/online_eval_report.json
 ```
 
@@ -1059,22 +1059,24 @@ watch
 ```text
 Online skill eval:
   data_dir=/Users/xiao_xiong/Desktop/code/BearCode/.bear/skill-evolution
-  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=100.0%, llm=off, llm_rules=0, llm_judgments=0, llm_pass_rate=0.0%
+  aggregate: ingests=8, ok_rate=100.0%, candidate_events=1, acceptance_rate=100.0%, replay_samples=1, rule_pass_rate=50.0%, llm=on, llm_rules=4, llm_judgments=1, llm_pass_rate=0.0%
   actions: none=7, add=1, merge=0, discard=0, failed=0, denied=0
   statuses: incubating=3, unobserved=1
   champion_statuses: incubating=3, unobserved=1
   skills:
-    政府报告撰写-正式书面化与政策结合: status=incubating, replay=1 (test=0), rules=1, llm_rules=0, llm_judgments=0, rule_pass=100.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); only 0 promotion-test sample(s); only 2 retrieval judgment(s)
-    zhangxuefeng-perspective: status=incubating, replay=0 (test=0), rules=3, llm_rules=0, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=11, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
-    webnovel-writing: status=incubating, replay=0 (test=0), rules=1, llm_rules=0, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=5, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
-    code_review: status=unobserved, replay=0 (test=0), rules=1, llm_rules=0, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=0, used_rate=0.0%, champion=unobserved - no online replay or usage signal yet
+    政府报告撰写-正式书面化与政策结合: status=incubating, replay=1 (test=0), rules=2, llm_rules=1, llm_judgments=1, rule_pass=50.0%, hard_failures=0, retrieved=2, used_rate=50.0%, champion=incubating - only 1 replay sample(s); only 0 promotion-test sample(s); only 2 retrieval judgment(s); failures: skill_instruction_alignment: Response fails to deliver a ~500-word formal report as requested; it includes clarifying questions and a draft exceeding the word limit.
+    zhangxuefeng-perspective: status=incubating, replay=0 (test=0), rules=4, llm_rules=1, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=12, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
+    webnovel-writing: status=incubating, replay=0 (test=0), rules=2, llm_rules=1, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=6, used_rate=0.0%, champion=incubating - only 0 replay sample(s); only 0 promotion-test sample(s)
+    code_review: status=unobserved, replay=0 (test=0), rules=2, llm_rules=1, llm_judgments=0, rule_pass=0.0%, hard_failures=0, retrieved=0, used_rate=0.0%, champion=unobserved - no online replay or usage signal yet
   report_file=/Users/xiao_xiong/Desktop/code/BearCode/.bear/skill-evolution/online_eval_report.json
 ```
 
 整体结论是：
 
 ```text
-在线评测链路已经跑通，但当前样本和使用证据还比较少。
+在线评测链路已经跑通，LLM judge 也已经实际调用。
+当前只有 1 条 replay 样本，所以只有 1 次 LLM 判断。
+这次 LLM 判断认为“政府报告撰写-正式书面化与政策结合”的历史回复不符合 Skill 要求。
 现在没有 Skill 达到 healthy，也没有真正形成可晋级的 champion。
 ```
 
@@ -1097,11 +1099,11 @@ Online skill eval:
 | `candidate_events` | `1` | 只有 1 次事件产生了候选 Skill 或维护动作 |
 | `acceptance_rate` | `100.0%` | 这 1 次候选事件被接受了 |
 | `replay_samples` | `1` | 当前只整理出 1 条可用于复查的历史对话样本 |
-| `rule_pass_rate` | `100.0%` | 已执行的规则判断全部通过，但样本只有 1 条，不能说明整体已经稳定 |
-| `llm` | `off` | 当前这次输出没有启用 LLM judge |
-| `llm_rules` | `0` | 当前没有编译出 LLM judge 规则 |
-| `llm_judgments` | `0` | 当前没有执行 LLM judge 判断 |
-| `llm_pass_rate` | `0.0%` | 没有 LLM 判断结果，所以通过率为 0 |
+| `rule_pass_rate` | `50.0%` | 所有已执行规则的总体通过率。当前一共执行 2 次规则判断，通过 1 次，失败 1 次 |
+| `llm` | `on` | 当前这次输出启用了 LLM judge，说明 `/skill-eval` 拿到了 `side_query` |
+| `llm_rules` | `4` | 所有 Skill 总共编译出 4 条 LLM judge 规则。当前 4 个 Skill 各有 1 条通用 LLM 对齐规则 |
+| `llm_judgments` | `1` | 实际执行了 1 次 LLM judge 判断。虽然有 4 条 LLM 规则，但只有 1 条 replay 样本可评 |
+| `llm_pass_rate` | `0.0%` | LLM judge 判断通过率。当前唯一一次 LLM 判断失败，所以是 0% |
 
 `actions` 是在线沉淀动作分布：
 
@@ -1135,10 +1137,10 @@ incubating=3, unobserved=1
 |------|------|
 | `status` | 这个 Skill 当前评测状态 |
 | `replay=1 (test=0)` | 有 1 条历史对话样本，其中 0 条属于晋级测试样本 |
-| `rules=1` | 从当前 `SKILL.md` 编译出了 1 条规则 |
-| `llm_rules=0` | 其中 0 条是 LLM judge 规则 |
-| `llm_judgments=0` | 这次实际执行了 0 次 LLM judge 判断 |
-| `rule_pass=100.0%` | 已有规则判断的通过率 |
+| `rules=2` | 从当前 `SKILL.md` 编译出了 2 条规则 |
+| `llm_rules=1` | 其中 1 条是 LLM judge 规则 |
+| `llm_judgments=1` | 这次实际执行了 1 次 LLM judge 判断 |
+| `rule_pass=50.0%` | 当前 Skill 的规则通过率。2 条规则里通过 1 条 |
 | `hard_failures=0` | 没有硬失败规则 |
 | `retrieved=2` | 后续被检索判断过 2 次 |
 | `used_rate=50.0%` | 被检索后实际使用比例为 50% |
@@ -1148,10 +1150,15 @@ incubating=3, unobserved=1
 
 具体到这次输出：
 
-- `政府报告撰写-正式书面化与政策结合` 有 1 条历史样本，规则通过率是 100%，也被检索过 2 次，使用率 50%。但它只有 1 条样本、没有晋级测试样本、检索判断也只有 2 次，所以仍然是 `incubating`。这里的 100% 只能说明这 1 条样本通过了规则，不能说明这个 Skill 已经足够稳定。
-- `zhangxuefeng-perspective` 被检索过 11 次，但没有历史对话样本，使用率是 0%。它有 3 条规则，但没有样本可评，所以规则通过率显示为 0%，状态仍然是 `incubating`。
-- `webnovel-writing` 被检索过 5 次，但也没有历史对话样本，使用率是 0%，因此仍然是 `incubating`。
+- `政府报告撰写-正式书面化与政策结合` 有 1 条历史样本，因此这次真正执行了规则判断。它有 2 条规则：一条程序化 `response_nonempty` 规则通过了；一条 LLM judge `skill_instruction_alignment` 规则失败了。因此 `rule_pass=50.0%`，`llm_pass_rate=0.0%`。失败原因是：LLM judge 认为历史回复没有按用户要求交付约 500 字正式报告，而是包含了澄清问题，并且草稿超过字数限制。
+- `zhangxuefeng-perspective` 被检索过 12 次，但没有 replay 样本，所以虽然编译出了 4 条规则、其中 1 条是 LLM 规则，但没有实际执行规则判断。状态仍然是 `incubating`，原因是没有 replay 样本，也没有 promotion-test 样本。
+- `webnovel-writing` 被检索过 6 次，但也没有 replay 样本，所以没有实际执行 LLM judge。状态仍然是 `incubating`。
 - `code_review` 没有历史样本，也没有检索或使用信号，所以是 `unobserved`。
+
+这里要注意两点：
+
+- `llm_rules=1` 只表示这个 Skill 编译出了 LLM 规则，不等于已经调用 LLM。
+- `llm_judgments=1` 才表示实际调用了 LLM judge。没有 replay 样本时，`llm_judgments` 会是 0。
 
 `report_file` 是完整 JSON 报告路径：
 
@@ -1177,18 +1184,7 @@ incubating=3, unobserved=1
 - run artifacts。
 - 本地 champion 记录。
 
-### 18.2 未支持
-
-当前没有做：
-
-- 不重新调用模型生成 replay 回复。
-- 不生成候选 Skill 变体。
-- 不做多版本 A/B 对比。
-- 不读取离线会话样本。
-- 不根据评测结果自动演化 Skill。
-- 不根据评测结果自动归档 Skill。
-
-### 18.3 边界总结
+### 18.2 边界总结
 
 ```text
 评测可以调用 LLM 判断规则是否满足，
