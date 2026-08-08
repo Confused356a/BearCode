@@ -17,7 +17,16 @@ import openai
 from agents.mcp_client import McpManager
 from agents.memory import MemoryPrefetch, start_memory_prefetch, format_memories_for_injection
 from agents.prompt import build_system_prompt
-from agents.session import save_session
+from agents.session_memory import (
+    FOLD_SESSION_MEMORY_SYSTEM,
+    build_anthropic_transcript,
+    build_folding_user_prompt,
+    build_openai_transcript,
+    fallback_folded_memory,
+    format_folded_memory,
+    parse_folded_memory,
+)
+from agents.session import save_folded_session_memory, save_session
 from agents.subagent import get_sub_agent_config
 from agents.tools import ToolDef, tool_definitions, execute_tool, CONCURRENCY_SAFE_TOOLS, check_permission, \
     get_active_tool_definitions
@@ -88,6 +97,7 @@ def _get_context_windows(model:str)->int:
 
 #多层级压缩常数
 SNIP_THRESHOLD = 0.60
+AUTO_COMPACT_THRESHOLD = 0.70
 SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]"
 SNIPPABLE_TOOLS = {"read_file", "grep_search", "list_files", "run_shell"}
 MICROCOMPACT_IDLE_S = 5 * 60  # 5 minutes
@@ -197,6 +207,12 @@ class Agent:
         self._last_retrieved_skill_hits: list[dict[str, Any]] = []
         self._pending_skill_extraction_window: dict[str, Any] | None = None
         self._background_skill_tasks: set[asyncio.Task] = set()
+        self._folded_session_memories: list[dict[str, Any]] = []
+        self._fold_last_time: float = 0.0
+        self._fold_count: int = 0
+        self._tool_error_streak: int = 0
+        self._same_tool_repeat_count: int = 0
+        self._last_tool_name: str = ""
 
         #构建系统提示词
         self._base_system_prompt = custom_system_prompt or build_system_prompt()
@@ -220,6 +236,8 @@ class Agent:
                 kwargs["base_url"] = anthropic_base_url
             self._anthropic_client = anthropic.AsyncAnthropic(**kwargs)
             self._openai_client = None
+
+        self._refresh_runtime_system_prompt()
 
     #判断返回模型的思考模式
     def _resolve_thinking_mode(self) -> str:
@@ -455,6 +473,21 @@ class Agent:
         else:
             print_assistant_text(text)
 
+    def _build_fold_guidance_section(self) -> str:
+        if self._custom_system_prompt is not None:
+            return ""
+        utilization = self.last_input_token_count / self.effective_window if self.effective_window else 0.0
+        last_fold = "never" if not self._fold_last_time else f"{int((time.time() - self._fold_last_time) / 60)}m ago"
+        return (
+            "\n\n# Runtime Fold Guidance\n"
+            f"- Current context utilization: {utilization:.0%}\n"
+            f"- Recent tool error streak: {self._tool_error_streak}\n"
+            f"- Same tool repeat count: {self._same_tool_repeat_count}\n"
+            f"- Last fold: {last_fold}\n"
+            "- If the context is getting long, the same tool is being retried without progress, or tool failures are accumulating, call `compact_context` before trying more tools.\n"
+            "- If you folded very recently and the next step is clear, prefer continuing rather than folding again.\n"
+        )
+
     def _refresh_runtime_system_prompt(self) -> None:
         if self._custom_system_prompt is not None:
             return
@@ -463,8 +496,35 @@ class Agent:
             self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt()
         else:
             self._system_prompt = self._base_system_prompt
+        self._system_prompt += self._build_fold_guidance_section()
         if self.use_openai and self._openai_messages:
             self._openai_messages[0]["content"] = self._system_prompt
+
+    def _record_tool_outcome(self, tool_name: str, success: bool) -> None:
+        if tool_name == self._last_tool_name:
+            self._same_tool_repeat_count += 1
+        else:
+            self._same_tool_repeat_count = 1
+        self._last_tool_name = tool_name
+        if success:
+            self._tool_error_streak = 0
+        else:
+            self._tool_error_streak += 1
+
+    def _record_fold_event(self) -> None:
+        self._fold_last_time = time.time()
+        self._fold_count += 1
+        self._tool_error_streak = 0
+        self._same_tool_repeat_count = 0
+        self._last_tool_name = ""
+
+    def _looks_like_tool_failure(self, tool_name: str, raw: str, result: str) -> bool:
+        text = f"{raw}\n{result}".lower()
+        if any(marker in text for marker in ("error", "denied", "timed out", "timeout")):
+            return True
+        if tool_name == "compact_context" and "no context compaction" in text:
+            return True
+        return False
 
     def _augment_user_message_with_skill_context(self, user_message: str) -> tuple[str, dict[str, Any] | None]:
         try:
@@ -661,6 +721,11 @@ class Agent:
         self._pending_skill_extraction_window = None
         self._last_retrieved_skill_reference = None
         self._last_retrieved_skill_hits = []
+        self._fold_last_time = 0.0
+        self._fold_count = 0
+        self._tool_error_streak = 0
+        self._same_tool_repeat_count = 0
+        self._last_tool_name = ""
         if self.use_openai:
             self._openai_messages.append({"role": "system", "content":self._system_prompt})
         self.total_input_tokens = 0
@@ -689,7 +754,9 @@ class Agent:
 
     #压缩会话
     async def compact(self)->None:
-        await self._compact_conversation()
+        compacted = await self._compact_conversation(trigger="manual")
+        if not compacted:
+            print_info("Nothing to compact yet.")
 
 
     #恢复会话信息
@@ -698,6 +765,8 @@ class Agent:
             self._anthropic_messages = self._normalize_anthropic_messages(_sanitize_for_utf8(data["anthropicMessages"]))
         if data.get("openaiMessages"):
             self._openai_messages = _sanitize_for_utf8(data["openaiMessages"])
+        if isinstance(data.get("foldedSessionMemories"), list):
+            self._folded_session_memories = _sanitize_for_utf8(data["foldedSessionMemories"])
         print_info(f"Session restored ({self._get_message_count()} messages).")
 
 
@@ -769,71 +838,81 @@ class Agent:
                 },
                 "anthropicMessages": _sanitize_for_utf8(self._anthropic_messages) if not self.use_openai else None,
                 "openaiMessages": _sanitize_for_utf8(self._openai_messages) if self.use_openai else None,
+                "foldedSessionMemories": _sanitize_for_utf8(self._folded_session_memories),
             })
         except Exception:
             pass
 
     #自动压缩
     async def _check_and_compact(self)->None:
-        if self.last_input_token_count>self.effective_window*0.85:
+        if self.last_input_token_count > self.effective_window * AUTO_COMPACT_THRESHOLD:
             print_info("Context window filling up, compacting conversation...")
-            await self._compact_conversation()
+            await self._compact_conversation(trigger="auto")
 
-    async def _compact_conversation(self)->None:
+    async def _compact_conversation(self, *, trigger: str = "manual")->bool:
         if self.use_openai:
-            await self._compact_openai()
+            compacted = await self._compact_openai(trigger=trigger)
         else:
-            await self._compact_anthropic()
-        print_info("Conversation compacted.")
+            compacted = await self._compact_anthropic(trigger=trigger)
+        if compacted:
+            print_info("Conversation compacted.")
+        return compacted
 
-    async def _compact_anthropic(self)->None:
+    async def _compact_anthropic(self, *, trigger: str)->bool:
         if len (self._anthropic_messages)<4:
-            return
+            return False
 
-        last_user_msg = self._anthropic_messages[-1]
-        summary_resp = await self._anthropic_client.messages.create(
-            model=self.model,
-            max_tokens=2048,
-            system ="You are a conversation summarizer. Be concise but preserve important details.",
-            messages=[
-                *_sanitize_for_utf8(self._anthropic_messages[:-1]),
-                {"role":"user",
-                 "content":"Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work."
-                }
-            ],
-        )
-        summary_text = summary_resp.content[0].text if summary_resp.content and  summary_resp.content[0].type == "text" else "No summary available."
-        self._anthropic_messages=[
-            {"role":"user","content":f"[Previous conversation summary]\n{summary_text}"},
-            {"role": "assistant", "content": "Understood. I have the context from our previous conversation. How can I continue helping?"},
-        ]
-        if last_user_msg.get("role") == "user":
-            self._anthropic_messages.append(last_user_msg)
-        self.last_input_tokens=0
+        transcript = build_anthropic_transcript(_sanitize_for_utf8(self._anthropic_messages))
+        if not transcript.strip():
+            return False
+        memory = await self._generate_folded_session_memory(transcript)
+        self._record_folded_session_memory(trigger, memory)
+        self._record_fold_event()
+        self._anthropic_messages = [{"role": "user", "content": format_folded_memory(memory)}]
+        self.last_input_token_count = 0
+        self._refresh_runtime_system_prompt()
+        return True
 
-    async def _compact_openai(self)->None:
+    async def _compact_openai(self, *, trigger: str)->bool:
         if len (self._openai_messages)<4:
-            return
+            return False
         system_msg = self._openai_messages[0]
-        last_user_msg = self._openai_messages[-1]
-        summary_resp = await self._openai_client.completions.create(
-            model=self.model,
-            messages =[
-                {"role": "system", "content": "You are a conversation summarizer. Be concise but preserve important details."},
-                *self._openai_messages[1:-1],
-                {"role": "user","content": "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work."},
-
-            ],
-        )
-        summary_text = summary_resp.choices[0].text if summary_resp.choices and summary_resp.choices[0].type == "text" else ""
+        transcript = build_openai_transcript(_sanitize_for_utf8(self._openai_messages))
+        if not transcript.strip():
+            return False
+        memory = await self._generate_folded_session_memory(transcript)
+        self._record_folded_session_memory(trigger, memory)
+        self._record_fold_event()
         self._openai_messages=[
             system_msg,
-            {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
-            {"role": "assistant","content": "Understood. I have the context from our previous conversation. How can I continue helping?"},
+            {"role": "user", "content": format_folded_memory(memory)},
         ]
-        if last_user_msg.get("role") == "user":
-            self._openai_messages.append(last_user_msg)
         self.last_input_token_count=0
+        self._refresh_runtime_system_prompt()
+        return True
+
+    async def _generate_folded_session_memory(self, transcript: str) -> dict[str, Any]:
+        side_query = self._build_side_query(max_tokens=6000)
+        if side_query is None:
+            return fallback_folded_memory(transcript)
+        try:
+            raw = await side_query(FOLD_SESSION_MEMORY_SYSTEM, build_folding_user_prompt(transcript))
+            return parse_folded_memory(raw)
+        except Exception:
+            return fallback_folded_memory(transcript)
+
+    def _record_folded_session_memory(self, trigger: str, memory: dict[str, Any]) -> None:
+        record = {
+            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "trigger": trigger,
+            "session_id": self.session_id,
+            **memory,
+        }
+        self._folded_session_memories.append(record)
+        try:
+            save_folded_session_memory(self.session_id, _sanitize_for_utf8(record))
+        except Exception:
+            pass
 
     #多层级压缩流水线
     def _run_compression_pipeline(self)->None:
@@ -1013,6 +1092,8 @@ class Agent:
     #执行工具入口
 
     async def _execute_tool_call(self, name: str, inp: dict) -> str:
+        if name == "compact_context":
+            return await self._execute_compact_context_tool(inp)
         if name in ("enter_plan_mode", "exit_plan_mode"):
             return await self._execute_plan_mode_tool(name)
         if name == "agent":
@@ -1031,6 +1112,21 @@ class Agent:
             except Exception:
                 pass
         return result
+
+    async def _execute_compact_context_tool(self, inp: dict) -> str:
+        reason = str(inp.get("reason") or "").strip()
+        compacted = await self._compact_conversation(trigger="tool")
+        if not compacted:
+            self._record_tool_outcome("compact_context", False)
+            return "No context compaction was performed because there is not enough conversation history yet."
+        self._record_tool_outcome("compact_context", True)
+        self._context_cleared = True
+        suffix = f"\nReason: {reason}" if reason else ""
+        return (
+            "Context compacted into structured session memory. "
+            "Continue from the folded memory now present in the conversation context."
+            f"{suffix}"
+        )
 
 
     async def _execute_skill_tool(self, inp: dict) -> str:
@@ -1156,6 +1252,11 @@ class Agent:
         if self.use_openai:
             self._openai_messages.append({"role": "system", "content": self._system_prompt})
         self.last_input_token_count = 0
+        self._fold_last_time = 0.0
+        self._fold_count = 0
+        self._tool_error_streak = 0
+        self._same_tool_repeat_count = 0
+        self._last_tool_name = ""
 
     async def _execute_agent_tool(self, inp:dict) -> str:
         agent_type = inp.get("type", "general")
@@ -1324,6 +1425,7 @@ class Agent:
                     raw = _safe_utf8_text(raw)
                     res = self._persist_large_result(tu.name, raw)
                     print_tool_result(tu.name, res)
+                    self._record_tool_outcome(tu.name, not self._looks_like_tool_failure(tu.name, raw, res))
                     tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": res})
                     continue
 
@@ -1333,6 +1435,7 @@ class Agent:
                 if perm["action"] == "deny":
                     # 权限拒绝时，也要返回一个 tool_result，让模型知道该工具调用失败的原因。
                     print_info(f"Denied: {perm.get('message', '')}")
+                    self._record_tool_outcome(tu.name, False)
                     tool_results.append({"type": "tool_result", "tool_use_id": tu.id,
                                          "content": f"Action denied: {perm.get('message', '')}"})
                     continue
@@ -1341,6 +1444,7 @@ class Agent:
                     # 高风险操作需要用户确认；同一个 message 确认过后会缓存，避免重复询问。
                     confirmed = await self._confirm_dangerous(perm["message"])
                     if not confirmed:
+                        self._record_tool_outcome(tu.name, False)
                         tool_results.append(
                             {"type": "tool_result", "tool_use_id": tu.id, "content": "User denied this action."})
                         continue
@@ -1354,6 +1458,7 @@ class Agent:
                 raw = _safe_utf8_text(raw)
                 res = self._persist_large_result(tu.name, raw)
                 print_tool_result(tu.name, res)
+                self._record_tool_outcome(tu.name, not self._looks_like_tool_failure(tu.name, raw, res))
 
                 if self._context_cleared:
                     # 工具执行过程中如果清理了上下文，就把结果作为新的用户消息写入，
@@ -1374,6 +1479,7 @@ class Agent:
             self._context_cleared = False
 
             # 工具结果可能很长，每轮工具执行后检查是否需要压缩上下文。
+            self._refresh_runtime_system_prompt()
             await self._check_and_compact()
 
     @staticmethod
@@ -1565,12 +1671,14 @@ class Agent:
 
                 if perm["action"] == "deny":
                     print_info(f"Denied: {perm.get('message', '')}")
+                    self._record_tool_outcome(fn_name, False)
                     oai_checked.append({"tc": tc, "fn": fn_name, "inp": inp, "allowed": False,
                                         "result": f"Action denied: {perm.get('message', '')}"})
                     continue
                 if perm["action"] == "confirm" and perm.get("message") and perm["message"] not in self._confirmed_paths:
                     confirmed = await self._confirm_dangerous(perm["message"])
                     if not confirmed:
+                        self._record_tool_outcome(fn_name, False)
                         oai_checked.append({"tc": tc, "fn": fn_name, "inp": inp, "allowed": False,
                                             "result": "User denied this action."})
                         continue
@@ -1600,6 +1708,10 @@ class Agent:
 
                         results = await asyncio.gather(*[_run_oai_safe(ct) for ct in batch["items"]])
                         for ct_item, res in results:
+                            self._record_tool_outcome(
+                                ct_item["fn"],
+                                not self._looks_like_tool_failure(ct_item["fn"], "", res),
+                            )
                             self._openai_messages.append(
                                 {"role": "tool", "tool_call_id": ct_item["tc"]["id"], "content": res})
                     else:
@@ -1613,6 +1725,10 @@ class Agent:
                             raw = _safe_utf8_text(raw)
                             res = self._persist_large_result(ct["fn"], raw)
                             print_tool_result(ct["fn"], res)
+                            self._record_tool_outcome(
+                                ct["fn"],
+                                not self._looks_like_tool_failure(ct["fn"], raw, res),
+                            )
 
                             if self._context_cleared:
                                 self._context_cleared = False
@@ -1624,6 +1740,7 @@ class Agent:
                                 {"role": "tool", "tool_call_id": ct["tc"]["id"], "content": res})
 
             self._context_cleared = False
+            self._refresh_runtime_system_prompt()
             await self._check_and_compact()
 
     async def _call_openai_stream(self) -> dict:

@@ -15,9 +15,26 @@ def _ensure_dir() -> None:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def get_project_session_dir() -> Path:
+    d = Path.cwd() / ".bear" / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def save_session(session_id: str, data: dict[str, Any]) -> None:
     _ensure_dir()
     (SESSION_DIR / f"{session_id}.json").write_text(json.dumps(data, indent=2, default=str))
+
+
+def save_folded_session_memory(session_id: str, record: dict[str, Any]) -> None:
+    d = get_project_session_dir()
+    line = json.dumps(record, ensure_ascii=False, default=str)
+    with (d / f"{session_id}.folded-memory.jsonl").open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    (d / f"{session_id}.folded-memory.latest.json").write_text(
+        json.dumps(record, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
 
 
 def load_session(session_id: str) -> dict[str, Any] | None:

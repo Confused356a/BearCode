@@ -16,7 +16,7 @@ ToolDef = dict  # Anthropic tool schema dict
 #权限模式
 PermissionMode = str  # "default" | "plan" | "acceptEdits" | "bypassPermissions" | "dontAsk"
 
-READ_TOOLS = {"read_file", "list_files", "grep_search"}
+READ_TOOLS = {"read_file", "list_files", "grep_search", "compact_context"}
 EDIT_TOOLS = {"write_file", "edit_file", "skill_evolve", "skill_create"}
 
 
@@ -125,6 +125,19 @@ tool_definitions: list[ToolDef] = [
                 "args": {"type": "string", "description": "Optional arguments to pass to the skill"},
             },
             "required": ["skill_name"],
+        },
+    },
+    {
+        "name": "compact_context",
+        "description": "Compact the current conversation context into structured session memory when the context is long, tool results are noisy, or a strategy reset is useful. This preserves task progress, current next steps, and tool-use experience, then continues from the folded memory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Brief reason for compacting now, such as long context, many tool calls, repeated failures, or strategy change.",
+                },
+            },
         },
     },
     {
@@ -765,7 +778,6 @@ async def execute_tool(
 def reset_permission_cache() -> None:
     global _cached_rules
     _cached_rules = None
-
 
 
 
