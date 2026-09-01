@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+
 import time
 import uuid
 from pathlib import Path
@@ -49,6 +50,7 @@ def _is_retryable(error: Exception) -> bool:
 
 
 def _safe_utf8_text(value: object) -> str:
+    
     return str(value).encode("utf-8", errors="replace").decode("utf-8")
 
 
